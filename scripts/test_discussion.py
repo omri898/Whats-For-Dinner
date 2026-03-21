@@ -1,9 +1,9 @@
-"""Phase 4 test: full discussion loop + supervisor."""
+"""Phase 4 test: full discussion loop + recommendations."""
 
 import asyncio
 
 from src.agents import check_vllm
-from src.discussion import run_discussion, run_supervisor
+from src.discussion import run_discussion, pick_recipes, display_recommendations
 from src.models import Cuisine, LazyLevel
 
 
@@ -16,12 +16,13 @@ async def main() -> None:
         lazy_level=LazyLevel.MEDIUM,
     )
 
-    recommendations = await run_supervisor(history)
+    picks = pick_recipes(history)
+    display_recommendations(picks)
 
     print(f"\nTotal turns: {len([m for m in history if m.agent != 'system'])}")
-    print(f"Picks: {len(recommendations.picks)}")
-    for pick in recommendations.picks:
-        print(f"  - {pick.recipe_name}: {pick.why_it_won}")
+    print(f"Picks: {len(picks)}")
+    for name in picks:
+        print(f"  - {name}")
 
 
 if __name__ == "__main__":

@@ -13,8 +13,6 @@ from src.models import (
     GroupContext,
     GroupMessage,
     LazyGroupContext,
-    SupervisorContext,
-    FinalRecommendations,
 )
 
 
@@ -238,53 +236,3 @@ Conversation so far:
 Remember: you are agent="nutricia". Set your fields accordingly."""
 
 
-# ---------------------------------------------------------------------------
-# Supervisor
-# ---------------------------------------------------------------------------
-
-supervisor_agent: Agent[SupervisorContext, FinalRecommendations] = Agent(  # type: ignore
-    make_model(),
-    deps_type=SupervisorContext,
-    output_type=FinalRecommendations,
-    retries=1,
-)
-
-
-@supervisor_agent.system_prompt
-def supervisor_system_prompt(ctx: RunContext[SupervisorContext]) -> str:  # type: ignore
-    lines: list[str] = []
-    for msg in ctx.deps.history:
-        if msg.agent == "system":
-            lines.append(msg.text)
-            continue
-        label = f"[{msg.agent.capitalize()}]"
-        brackets: list[str] = [msg.message_type]
-        if msg.approval is not None:
-            brackets.append(f"approval={msg.approval}")
-        if msg.recipe_name is not None:
-            brackets.append(f"recipe={msg.recipe_name}")
-        meta = " · ".join(brackets)
-        lines.append(f"{label} {msg.text}  [{meta}]")
-
-    transcript = "\n".join(lines)
-
-    return f"""\
-You are the Supervisor. You have read the full discussion transcript between Chef
-Enthusiastico, The Lazy Advisor, and Dr. Nutricia.
-
-Your job: identify exactly 3 recipes from the discussion. Prefer recipes that received
-genuine approval from both Lazy and Nutricia. If fewer than 3 reached full agreement
-(e.g. the group ran out of time), fill remaining slots with the best partial-approval
-candidates, noting in why_it_won that it was a partial agreement.
-
-Also:
-- Write vibe_check: a one-liner on who shaped the outcome most (e.g. "Lazy ran the show
-  tonight — every pivot was effort-driven").
-- Write supervisor_verdict: one entertaining paragraph summarizing the chaos.
-
-Be dry. Be brief. You've seen a lot of these group chats.
-
-Discussion transcript:
-(Fields in brackets: message type; approval=True/False = whether the agent accepted the recipe; recipe = recipe name being discussed)
-
-{transcript}"""

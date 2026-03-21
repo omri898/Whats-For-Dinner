@@ -11,13 +11,11 @@ from pydantic_ai.messages import ThinkingPart  # type: ignore
 from src.config import MAX_TURNS, MIN_TURNS, MIN_PROPOSALS, TURN_ORDER
 from src.models import (
     Cuisine,
-    FinalRecommendations,
     GroupMessage,
     LazyGroupContext,
     LazyLevel,
-    SupervisorContext,
 )
-from src.agents import chef_agent, lazy_agent, nutricia_agent, supervisor_agent
+from src.agents import chef_agent, lazy_agent, nutricia_agent
 
 console = Console()
 
@@ -185,31 +183,60 @@ async def run_discussion(
 
 
 # ---------------------------------------------------------------------------
-# Supervisor
+# Recommendations
 # ---------------------------------------------------------------------------
 
-async def run_supervisor(history: list[GroupMessage]) -> FinalRecommendations:
-    """Run the Supervisor agent on the discussion history."""
-    ctx = SupervisorContext(history=history)
+def pick_recipes(history: list[GroupMessage], n: int = 3) -> list[str]:
+    """
+    Deterministically pick up to n recipe recommendations from the discussion history.
 
-    console.rule("[bold blue]Supervisor[/bold blue]")
+    For each recipe name seen in the discussion, track the most recent approval
+    from Lazy and Nutricia. Full-consensus picks (both approved) are ranked first,
+    then partial picks (one approved), ordered by first appearance in the discussion.
+    Returns exactly n names, padding with partials if fewer than n reached consensus.
+    """
+    # Ordered list of recipe names by first appearance
+    order: list[str] = []
+    # recipe_name (lower) -> most recent approval per reactor
+    approvals: dict[str, dict[str, bool]] = {}
+
+    for msg in history:
+        if msg.recipe_name and msg.message_type in ("proposal", "pivot", "lock"):
+            key = msg.recipe_name.lower()
+            if key not in approvals:
+                order.append(key)
+                approvals[key] = {}
+        if msg.agent in ("lazy", "nutricia") and msg.approval is not None and msg.recipe_name:
+            key = msg.recipe_name.lower()
+            if key not in approvals:
+                order.append(key)
+                approvals[key] = {}
+            approvals[key][msg.agent] = msg.approval
+
+    def score(key: str) -> int:
+        a = approvals.get(key, {})
+        return sum(1 for v in a.values() if v)
+
+    full = [k for k in order if score(k) == 2]
+    partial = [k for k in order if score(k) == 1]
+    candidates = full + partial
+
+    # Recover original casing from history
+    name_map: dict[str, str] = {}
+    for msg in history:
+        if msg.recipe_name:
+            name_map.setdefault(msg.recipe_name.lower(), msg.recipe_name)
+
+    picks = [name_map.get(k, k) for k in candidates[:n]]
+    # Pad with any remaining recipe names if we somehow still have fewer than n
+    remaining = [name_map.get(k, k) for k in order if k not in candidates[:n]]
+    picks += remaining[:max(0, n - len(picks))]
+    return picks[:n]
+
+
+def display_recommendations(picks: list[str]) -> None:
+    console.rule("[bold blue]Recommendations[/bold blue]")
     console.print()
-
-    with console.status("[dim]Supervisor is reviewing the discussion...[/dim]"):
-        result = await supervisor_agent.run("Summarize.", deps=ctx)
-
-    recs = result.output
-
-    # Print recommendations
-    console.print(Panel(
-        recs.supervisor_verdict,
-        title="[bold blue]Supervisor's Verdict[/bold blue]",
-        border_style="blue",
-    ))
-
-    for i, pick in enumerate(recs.picks, 1):
-        console.print(f"  [bold]{i}. {pick.recipe_name}[/bold] — {pick.why_it_won}")
-
-    console.print(f"\n  [italic]{recs.vibe_check}[/italic]\n")
-
-    return recs
+    for i, name in enumerate(picks, 1):
+        console.print(f"  [bold]{i}. {name}[/bold]")
+    console.print()

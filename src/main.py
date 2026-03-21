@@ -9,7 +9,7 @@ from rich.columns import Columns
 from rich.text import Text
 
 from src.agents import check_vllm
-from src.discussion import load_ingredients, run_discussion, run_supervisor
+from src.discussion import load_ingredients, run_discussion, pick_recipes, display_recommendations
 from src.models import Cuisine, LazyLevel
 
 console = Console()
@@ -140,8 +140,9 @@ async def async_main(debug: bool = False) -> None:
         debug=debug,
     )
 
-    # Run supervisor
-    recommendations = await run_supervisor(history)
+    # Pick and display recommendations
+    picks = pick_recipes(history)
+    display_recommendations(picks)
 
     if debug:
         console.print("\n[dim]--- Debug: raw context JSON would appear here ---[/dim]")
