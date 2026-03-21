@@ -47,7 +47,7 @@ class Cuisine(str, Enum):
         return self.value
 
 
-MessageType = Literal["proposal", "reaction", "pivot", "defense", "concession", "sting", "system"]
+MessageType = Literal["proposal", "reaction", "pivot", "defense", "concession", "system"]
 
 
 class GroupMessage(BaseModel):

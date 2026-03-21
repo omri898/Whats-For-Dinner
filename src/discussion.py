@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from rich.console import Console
@@ -8,7 +9,7 @@ from rich.panel import Panel
 
 from pydantic_ai.messages import ThinkingPart  # type: ignore
 
-from src.config import MAX_TURNS, MIN_TURNS, TURN_ORDER
+from src.config import MAX_TURNS, MESSAGE_PAUSE_SECONDS, MIN_TURNS, TURN_ORDER
 from src.models import (
     Cuisine,
     GroupMessage,
@@ -152,6 +153,8 @@ async def run_round(
 
         with console.status(f"[dim]{display_name} is thinking...[/dim]"):
             result = await agent.run("Your turn.", deps=context)
+            if not debug:
+                time.sleep(MESSAGE_PAUSE_SECONDS)
 
         msg = result.output
         context.history.append(msg)
