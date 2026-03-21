@@ -171,8 +171,8 @@ async def run_round(
                                 border_style="magenta",
                             ))
 
-        # Exit immediately on agreement (after at least one full rotation)
-        if turn_num >= len(TURN_ORDER) and turn_num % len(TURN_ORDER) == 0:
+        # Exit on agreement only after MIN_TURNS, on full rotation boundaries
+        if turn_num >= MIN_TURNS and turn_num % len(TURN_ORDER) == 0:
             agreed = _round_agreement(context.history)
             if agreed:
                 console.print()
