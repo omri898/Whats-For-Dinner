@@ -4,7 +4,7 @@ A multi-agent dinner advisor CLI where three AI friends with distinct personalit
 
 ## What it does
 
-You pick your laziness level, a cuisine preference, and required ingredients from your pantry. Three agents — **Chef Enthusiastico** (the enthusiast), **The Lazy Advisor** (effort gatekeeper), and **Dr. Nutricia** (nutrition evangelist) — argue in a group chat until they agree on a recipe. A Supervisor then summarizes the chaos into 3 recommendations.
+You pick your laziness level, a cuisine preference, and required ingredients from your pantry. Three agents — **Chef Enthusiastico** (the enthusiast), **The Lazy Advisor** (effort gatekeeper), and **Dr. Nutricia** (nutrition evangelist) — argue in a group chat until they agree on a recipe. This happens 3 times in sequence, with each round targeting a distinct recipe so you end up with 3 genuinely different recommendations.
 
 ## Setup
 
@@ -39,7 +39,7 @@ Or test individual phases:
 make check-vllm        # verify vLLM is running
 make test-chef         # Chef agent alone
 make test-round        # all three agents, one round
-make test-discussion   # full discussion loop + supervisor
+make test-discussion   # 3 sequential rounds + recommendations
 make notebook          # open the developer notebook
 ```
 
@@ -64,6 +64,8 @@ make notebook          # open the developer notebook
 
 ## Architecture
 
-Three PydanticAI agents share a flat message history (group chat pattern). Each agent has a `@system_prompt` decorator that serializes only the context fields relevant to its role — Chef sees the full pantry, Lazy sees the laziness level (privately), and Nutricia only sees proposed recipe ingredients. A fixed turn order (Chef → Lazy → Nutricia) cycles until agreement or MAX_TURNS. The Supervisor always runs at the end, producing exactly 3 recipe picks regardless of whether consensus was reached.
+Three PydanticAI agents share a flat message history (group chat pattern) within each round. Each agent has a `@system_prompt` decorator that serializes only the context fields relevant to its role — Chef sees the full pantry, Lazy sees the laziness level (privately), and Nutricia only sees proposed recipe ingredients.
+
+The discussion runs as **3 sequential rounds**, each targeting one recipe. A round exits immediately when Lazy and Nutricia both approve the same dish. Agreed recipe names are passed forward between rounds so Chef is instructed to propose something different each time — different dish type, different primary protein. If a round hits `MAX_TURNS` without agreement, the recipe with the most approvals is picked as a fallback.
 
 Built as a portfolio project demonstrating multi-agent coordination with structured output, personality-driven prompts, and a local inference backend.
