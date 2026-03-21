@@ -97,16 +97,3 @@ class LazyGroupContext(GroupContext):
     lazy_level: LazyLevel = LazyLevel.MEDIUM
 
 
-class SupervisorContext(BaseModel):
-    history: list[GroupMessage]
-
-
-class RecipePick(BaseModel):
-    recipe_name: str
-    why_it_won: str       # one sentence — which friend got their way
-
-
-class FinalRecommendations(BaseModel):
-    picks: list[RecipePick]          # always exactly 3 recipes
-    vibe_check: str                  # one-liner on group dynamics — who shaped the outcome most
-    supervisor_verdict: str          # one entertaining paragraph summing up the chaos
