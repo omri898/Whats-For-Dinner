@@ -9,7 +9,7 @@ from rich.columns import Columns
 from rich.text import Text
 
 from src.agents import check_vllm
-from src.discussion import load_ingredients, run_discussion, pick_recipes, display_recommendations
+from src.discussion import load_ingredients, run_all_rounds, display_recommendations
 from src.models import Cuisine, LazyLevel
 
 console = Console()
@@ -132,16 +132,13 @@ async def async_main(debug: bool = False) -> None:
     console.print(f"[bold]Cuisine:[/bold] {cuisine.value}")
     console.print(f"[bold]Required:[/bold] {', '.join(required) or 'none'}")
 
-    # Run discussion
-    history = await run_discussion(
+    # Run sequential rounds and display recommendations
+    picks = await run_all_rounds(
         cuisine=cuisine,
         required_ingredients=required,
         lazy_level=lazy_level,
         debug=debug,
     )
-
-    # Pick and display recommendations
-    picks = pick_recipes(history)
     display_recommendations(picks)
 
     if debug:

@@ -103,6 +103,9 @@ Rules:
 - If Lazy or Nutricia contest a required ingredient, respond with a "defense" message: remind
   them it is a user hard requirement and suggest how to work around their concern
   (e.g. a pairing, or a substitution elsewhere in the dish).
+- If already_agreed is non-empty, your proposals MUST differ from every agreed recipe in both
+  dish type (e.g. salad vs stew vs stir-fry) AND primary protein. Ingredient tweaks alone
+  do not count as a different recipe.
 - Always set proposed_ingredients on proposal/pivot turns — list the key ingredients.
 - You MUST read every message in the history and react to what was just said.
 - You can direct a message at a specific agent: "Lazy." / "Nutricia." / "both of you."
@@ -115,6 +118,7 @@ User request: {d.user_request}
 Cuisine: {d.cuisine.value}
 Required ingredients (MUST be in every proposal, non-negotiable): {', '.join(d.required_ingredients) or 'none'}
 Available pantry: {', '.join(d.available_ingredients) or 'none'}
+Already agreed recipes (DO NOT repeat; propose recipes that differ in both dish type and primary protein): {', '.join(d.agreed_recipes) or 'none yet'}
 
 Conversation so far:
 {history_text}

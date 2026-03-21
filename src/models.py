@@ -82,6 +82,10 @@ class GroupContext(BaseModel):
         default_factory=list,
         description="Pantry items loaded from data/ingredients.json. Chef's domain only.",
     )
+    agreed_recipes: list[str] = Field(
+        default_factory=list,
+        description="Names of recipes agreed upon in prior rounds. Empty in round 1. Used by Chef to avoid similar proposals.",
+    )
     history: list[GroupMessage] = Field(default_factory=list)
 
 

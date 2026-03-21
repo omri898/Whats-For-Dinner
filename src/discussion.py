@@ -8,7 +8,7 @@ from rich.panel import Panel
 
 from pydantic_ai.messages import ThinkingPart  # type: ignore
 
-from src.config import MAX_TURNS, MIN_TURNS, MIN_PROPOSALS, TURN_ORDER
+from src.config import MAX_TURNS, MIN_TURNS, TURN_ORDER
 from src.models import (
     Cuisine,
     GroupMessage,
@@ -42,30 +42,6 @@ def load_ingredients() -> list[str]:
         return json.load(f)["ingredients"]
 
 
-def agreement_reached(history: list[GroupMessage], min_proposals: int) -> bool:
-    """
-    True when:
-    - Chef has proposed at least min_proposals different recipes
-    - Both lazy and nutricia approved the SAME recipe name in their most recent turns
-    Recipe name comparison is case-insensitive.
-    """
-    proposals = [m for m in history if m.recipe_name and m.message_type in ("proposal", "pivot")]
-    unique_recipes = {m.recipe_name.lower() for m in proposals}
-    if len(unique_recipes) < min_proposals:
-        return False
-    last_lazy = next((m for m in reversed(history) if m.agent == "lazy"), None)
-    last_nutricia = next((m for m in reversed(history) if m.agent == "nutricia"), None)
-    if not last_lazy or not last_nutricia:
-        return False
-    return (
-        last_lazy.approval is True
-        and last_nutricia.approval is True
-        and last_lazy.recipe_name is not None
-        and last_nutricia.recipe_name is not None
-        and last_lazy.recipe_name.lower() == last_nutricia.recipe_name.lower()
-    )
-
-
 def _print_message(msg: GroupMessage, turn: int, debug: bool = False) -> None:
     """Print a single discussion message with Rich formatting."""
     if msg.agent == "system":
@@ -88,18 +64,143 @@ def _print_message(msg: GroupMessage, turn: int, debug: bool = False) -> None:
         console.print(f"  [dim]proposed_ingredients: {msg.proposed_ingredients}[/dim]")
 
 
+def _round_agreement(history: list[GroupMessage]) -> str | None:
+    """
+    Return the agreed recipe name if both Lazy and Nutricia most recently
+    approved the same recipe, else None. Case-insensitive comparison.
+    """
+    last_lazy = next((m for m in reversed(history) if m.agent == "lazy"), None)
+    last_nutricia = next((m for m in reversed(history) if m.agent == "nutricia"), None)
+    if not last_lazy or not last_nutricia:
+        return None
+    if (
+        last_lazy.approval is True
+        and last_nutricia.approval is True
+        and last_lazy.recipe_name is not None
+        and last_nutricia.recipe_name is not None
+        and last_lazy.recipe_name.lower() == last_nutricia.recipe_name.lower()
+    ):
+        return last_lazy.recipe_name
+    return None
+
+
+def pick_best_from_round(history: list[GroupMessage]) -> str | None:
+    """
+    Fallback: return the recipe from this round's history with the most approvals.
+    Full consensus (both approved) beats partial (one approved).
+    Returns None if no recipes were proposed.
+    """
+    order: list[str] = []
+    approvals: dict[str, dict[str, bool]] = {}
+    name_map: dict[str, str] = {}
+
+    for msg in history:
+        if msg.recipe_name and msg.message_type in ("proposal", "pivot"):
+            key = msg.recipe_name.lower()
+            if key not in approvals:
+                order.append(key)
+                approvals[key] = {}
+            name_map.setdefault(key, msg.recipe_name)
+        if msg.agent in ("lazy", "nutricia") and msg.approval is not None and msg.recipe_name:
+            key = msg.recipe_name.lower()
+            if key not in approvals:
+                order.append(key)
+                approvals[key] = {}
+            approvals[key][msg.agent] = msg.approval
+            name_map.setdefault(key, msg.recipe_name)
+
+    if not order:
+        return None
+
+    def score(key: str) -> int:
+        return sum(1 for v in approvals.get(key, {}).values() if v)
+
+    best = max(order, key=score)
+    return name_map.get(best, best)
+
+
 # ---------------------------------------------------------------------------
-# Discussion loop
+# Per-recipe round
 # ---------------------------------------------------------------------------
 
-async def run_discussion(
+async def run_round(
+    context: LazyGroupContext,
+    *,
+    round_num: int,
+    debug: bool = False,
+) -> tuple[str | None, list[GroupMessage]]:
+    """
+    Run one mini-discussion targeting a single recipe.
+    Exits immediately when Lazy and Nutricia both approve the same recipe.
+    Falls back to pick_best_from_round on MAX_TURNS exhaustion.
+    Returns (recipe_name_or_none, round_history).
+    """
+    console.print()
+    console.rule(f"[bold blue]Round {round_num}[/bold blue]")
+    console.print()
+
+    if debug:
+        console.print("[dim]Context at round start:[/dim]")
+        console.print(f"[dim]{context.model_dump_json(indent=2)}[/dim]")
+
+    agreed: str | None = None
+
+    for turn_num in range(1, MAX_TURNS + 1):
+        agent_name = TURN_ORDER[(turn_num - 1) % len(TURN_ORDER)]
+        agent = AGENT_MAP[agent_name]
+        display_name = AGENT_DISPLAY[agent_name][0]
+
+        with console.status(f"[dim]{display_name} is thinking...[/dim]"):
+            result = await agent.run("Your turn.", deps=context)
+
+        msg = result.output
+        context.history.append(msg)
+        _print_message(msg, turn_num, debug=debug)
+
+        if debug:
+            for m in result.all_messages():
+                if hasattr(m, "parts"):
+                    for part in m.parts:
+                        if isinstance(part, ThinkingPart):
+                            console.print(Panel(
+                                part.content,
+                                title="[bold magenta]Thinking[/bold magenta]",
+                                border_style="magenta",
+                            ))
+
+        # Exit immediately on agreement (after at least one full rotation)
+        if turn_num >= len(TURN_ORDER) and turn_num % len(TURN_ORDER) == 0:
+            agreed = _round_agreement(context.history)
+            if agreed:
+                console.print()
+                console.print(f"[bold green]Agreement: {agreed}[/bold green]")
+                break
+    else:
+        console.print()
+        console.print("[bold yellow]MAX_TURNS reached — picking best candidate.[/bold yellow]")
+        agreed = pick_best_from_round(context.history)
+
+    round_history = list(context.history)
+    return agreed, round_history
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+async def run_all_rounds(
     cuisine: Cuisine,
     required_ingredients: list[str],
     lazy_level: LazyLevel,
     *,
+    num_rounds: int = 3,
     debug: bool = False,
-) -> list[GroupMessage]:
-    """Run the multi-agent discussion. Returns the full message history."""
+) -> list[str]:
+    """
+    Run num_rounds sequential per-recipe discussions.
+    After each round, agreed recipes are passed forward so Chef avoids similar proposals.
+    Returns list of up to num_rounds recipe name strings.
+    """
     available = load_ingredients()
 
     if required_ingredients:
@@ -118,103 +219,22 @@ async def run_discussion(
         lazy_level=lazy_level,
     )
 
-    if debug:
-        console.print("[dim]Initial context:[/dim]")
-        console.print(f"[dim]{context.model_dump_json(indent=2)}[/dim]")
+    picks: list[str] = []
 
-    console.print()
-    console.rule("[bold blue]Discussion[/bold blue]")
-    console.print()
+    for round_num in range(1, num_rounds + 1):
+        context.history = []
+        context.agreed_recipes = list(picks)
 
-    for turn_num in range(1, MAX_TURNS + 1):
-        agent_name = TURN_ORDER[(turn_num - 1) % len(TURN_ORDER)]
-        agent = AGENT_MAP[agent_name]
-        display_name = AGENT_DISPLAY[agent_name][0]
+        pick, _ = await run_round(context, round_num=round_num, debug=debug)
+        if pick:
+            picks.append(pick)
 
-        with console.status(f"[dim]{display_name} is thinking...[/dim]"):
-            result = await agent.run("Your turn.", deps=context)
-
-        msg = result.output
-        context.history.append(msg)
-        _print_message(msg, turn_num, debug=debug)
-
-        if debug:
-            # Show thinking tokens
-            for m in result.all_messages():
-                if hasattr(m, "parts"):
-                    for part in m.parts:
-                        if isinstance(part, ThinkingPart):
-                            console.print(Panel(
-                                part.content,
-                                title="[bold magenta]Thinking[/bold magenta]",
-                                border_style="magenta",
-                            ))
-
-        # Check agreement after each full rotation past MIN_TURNS
-        if turn_num >= MIN_TURNS and turn_num % len(TURN_ORDER) == 0:
-            if agreement_reached(context.history, MIN_PROPOSALS):
-                console.print()
-                console.print("[bold green]Agreement reached![/bold green]")
-                break
-    else:
-        console.print()
-        console.print("[bold yellow]MAX_TURNS reached — no full agreement.[/bold yellow]")
-
-    console.print()
-    return context.history
+    return picks
 
 
 # ---------------------------------------------------------------------------
-# Recommendations
+# Display
 # ---------------------------------------------------------------------------
-
-def pick_recipes(history: list[GroupMessage], n: int = 3) -> list[str]:
-    """
-    Deterministically pick up to n recipe recommendations from the discussion history.
-
-    For each recipe name seen in the discussion, track the most recent approval
-    from Lazy and Nutricia. Full-consensus picks (both approved) are ranked first,
-    then partial picks (one approved), ordered by first appearance in the discussion.
-    Returns exactly n names, padding with partials if fewer than n reached consensus.
-    """
-    # Ordered list of recipe names by first appearance
-    order: list[str] = []
-    # recipe_name (lower) -> most recent approval per reactor
-    approvals: dict[str, dict[str, bool]] = {}
-
-    for msg in history:
-        if msg.recipe_name and msg.message_type in ("proposal", "pivot"):
-            key = msg.recipe_name.lower()
-            if key not in approvals:
-                order.append(key)
-                approvals[key] = {}
-        if msg.agent in ("lazy", "nutricia") and msg.approval is not None and msg.recipe_name:
-            key = msg.recipe_name.lower()
-            if key not in approvals:
-                order.append(key)
-                approvals[key] = {}
-            approvals[key][msg.agent] = msg.approval
-
-    def score(key: str) -> int:
-        a = approvals.get(key, {})
-        return sum(1 for v in a.values() if v)
-
-    full = [k for k in order if score(k) == 2]
-    partial = [k for k in order if score(k) == 1]
-    candidates = full + partial
-
-    # Recover original casing from history
-    name_map: dict[str, str] = {}
-    for msg in history:
-        if msg.recipe_name:
-            name_map.setdefault(msg.recipe_name.lower(), msg.recipe_name)
-
-    picks = [name_map.get(k, k) for k in candidates[:n]]
-    # Pad with any remaining recipe names if we somehow still have fewer than n
-    remaining = [name_map.get(k, k) for k in order if k not in candidates[:n]]
-    picks += remaining[:max(0, n - len(picks))]
-    return picks[:n]
-
 
 def display_recommendations(picks: list[str]) -> None:
     console.rule("[bold blue]Recommendations[/bold blue]")
