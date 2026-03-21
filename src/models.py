@@ -1,0 +1,112 @@
+from __future__ import annotations
+from enum import Enum
+from typing import Literal
+from pydantic import BaseModel, Field
+
+
+class LazyLevel(str, Enum):
+    AMBITIOUS = "Feeling Ambitious"
+    MEDIUM    = "I Guess I'll Cook"
+    COUCH     = "Don't Make Me Move"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class Cuisine(str, Enum):
+    AFRICAN          = "African"
+    ASIAN            = "Asian"
+    AMERICAN         = "American"
+    BRITISH          = "British"
+    CAJUN            = "Cajun"
+    CARIBBEAN        = "Caribbean"
+    CHINESE          = "Chinese"
+    EASTERN_EUROPEAN = "Eastern European"
+    EUROPEAN         = "European"
+    FRENCH           = "French"
+    GERMAN           = "German"
+    GREEK            = "Greek"
+    INDIAN           = "Indian"
+    IRISH            = "Irish"
+    ITALIAN          = "Italian"
+    JAPANESE         = "Japanese"
+    JEWISH           = "Jewish"
+    KOREAN           = "Korean"
+    LATIN_AMERICAN   = "Latin American"
+    MEDITERRANEAN    = "Mediterranean"
+    MEXICAN          = "Mexican"
+    MIDDLE_EASTERN   = "Middle Eastern"
+    NORDIC           = "Nordic"
+    SOUTHERN         = "Southern"
+    SPANISH          = "Spanish"
+    THAI             = "Thai"
+    VIETNAMESE       = "Vietnamese"
+    I_DONT_MIND      = "I Don't Mind"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+MessageType = Literal["proposal", "reaction", "pivot", "defense", "concession", "sting", "lock", "system"]
+
+
+class GroupMessage(BaseModel):
+    agent: Literal["chef", "lazy", "nutricia", "system"]
+    directed_at: Literal["chef", "lazy", "nutricia", "all"] = "all"
+    message_type: MessageType
+    text: str
+    # Only set on proposal/pivot/lock turns:
+    recipe_name: str | None = None
+    proposed_ingredients: list[str] | None = None  # ingredients in the proposed recipe
+    # Only set on reaction/concession turns:
+    approval: bool | None = None
+
+
+class GroupContext(BaseModel):
+    """
+    Shared discussion context.
+    - Chef sees all fields.
+    - Lazy sees required_ingredients, locked_ingredients, and proposed_ingredients
+      from history (NOT available_ingredients).
+    - Nutricia sees proposed_ingredients from history and locked_ingredients
+      (NOT available_ingredients, NOT required_ingredients directly).
+    lazy_level is intentionally absent here; only LazyGroupContext carries it.
+    """
+    user_request: str
+    cuisine: Cuisine = Cuisine.I_DONT_MIND
+    required_ingredients: list[str] = Field(
+        default_factory=list,
+        description="Ingredients the user insists must appear in the recipe.",
+    )
+    available_ingredients: list[str] = Field(
+        default_factory=list,
+        description="Pantry items loaded from data/ingredients.json. Chef's domain only.",
+    )
+    locked_ingredients: list[str] = Field(
+        default_factory=list,
+        description="Ingredients Chef has locked in (user hard requirements). Updated by discussion loop when Chef emits a 'lock' message.",
+    )
+    history: list[GroupMessage] = Field(default_factory=list)
+
+
+class LazyGroupContext(GroupContext):
+    """
+    Full context — passed ONLY to The Lazy Advisor.
+    lazy_level must never appear in a GroupContext handed to Chef or Nutricia.
+    """
+    lazy_level: LazyLevel = LazyLevel.MEDIUM
+
+
+class SupervisorContext(BaseModel):
+    history: list[GroupMessage]
+
+
+class RecipePick(BaseModel):
+    recipe_name: str
+    why_it_won: str       # one sentence — which friend got their way
+
+
+class FinalRecommendations(BaseModel):
+    picks: list[RecipePick]          # always exactly 3 recipes
+    vibe_check: str                  # one-liner on group dynamics — who shaped the outcome most
+    supervisor_verdict: str          # one entertaining paragraph summing up the chaos
