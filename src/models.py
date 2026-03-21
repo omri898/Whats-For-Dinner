@@ -47,7 +47,7 @@ class Cuisine(str, Enum):
         return self.value
 
 
-MessageType = Literal["proposal", "reaction", "pivot", "defense", "concession", "sting", "lock", "system"]
+MessageType = Literal["proposal", "reaction", "pivot", "defense", "concession", "sting", "system"]
 
 
 class GroupMessage(BaseModel):
@@ -55,7 +55,7 @@ class GroupMessage(BaseModel):
     directed_at: Literal["chef", "lazy", "nutricia", "all"] = "all"
     message_type: MessageType
     text: str
-    # Only set on proposal/pivot/lock turns:
+    # Only set on proposal/pivot turns:
     recipe_name: str | None = None
     proposed_ingredients: list[str] | None = None  # ingredients in the proposed recipe
     # Only set on reaction/concession turns:
@@ -66,9 +66,9 @@ class GroupContext(BaseModel):
     """
     Shared discussion context.
     - Chef sees all fields.
-    - Lazy sees required_ingredients, locked_ingredients, and proposed_ingredients
-      from history (NOT available_ingredients).
-    - Nutricia sees proposed_ingredients from history and locked_ingredients
+    - Lazy sees required_ingredients and proposed_ingredients from history
+      (NOT available_ingredients).
+    - Nutricia sees proposed_ingredients from history
       (NOT available_ingredients, NOT required_ingredients directly).
     lazy_level is intentionally absent here; only LazyGroupContext carries it.
     """
@@ -76,15 +76,11 @@ class GroupContext(BaseModel):
     cuisine: Cuisine = Cuisine.I_DONT_MIND
     required_ingredients: list[str] = Field(
         default_factory=list,
-        description="Ingredients the user insists must appear in the recipe.",
+        description="Ingredients the user insists must appear in every recipe. Non-negotiable from the start.",
     )
     available_ingredients: list[str] = Field(
         default_factory=list,
         description="Pantry items loaded from data/ingredients.json. Chef's domain only.",
-    )
-    locked_ingredients: list[str] = Field(
-        default_factory=list,
-        description="Ingredients Chef has locked in (user hard requirements). Updated by discussion loop when Chef emits a 'lock' message.",
     )
     history: list[GroupMessage] = Field(default_factory=list)
 

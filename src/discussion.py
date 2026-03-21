@@ -115,7 +115,6 @@ async def run_discussion(
         cuisine=cuisine,
         required_ingredients=list(required_ingredients),
         available_ingredients=available,
-        locked_ingredients=[],
         lazy_level=lazy_level,
     )
 
@@ -151,23 +150,6 @@ async def run_discussion(
                                 border_style="magenta",
                             ))
 
-        # Lock mechanic: Chef locks a required ingredient
-        if agent_name == "chef" and msg.message_type == "lock":
-            # Sync locked_ingredients with required_ingredients
-            for ing in context.required_ingredients:
-                if ing not in context.locked_ingredients:
-                    context.locked_ingredients.append(ing)
-            # Inject system note
-            system_note = GroupMessage(
-                agent="system",
-                message_type="system",
-                text=f"[System] Locked ingredients: {', '.join(context.locked_ingredients)}. "
-                     "These are user hard requirements — do not contest them.",
-                directed_at="all",
-            )
-            context.history.append(system_note)
-            _print_message(system_note, turn_num, debug=debug)
-
         # Check agreement after each full rotation past MIN_TURNS
         if turn_num >= MIN_TURNS and turn_num % len(TURN_ORDER) == 0:
             if agreement_reached(context.history, MIN_PROPOSALS):
@@ -201,7 +183,7 @@ def pick_recipes(history: list[GroupMessage], n: int = 3) -> list[str]:
     approvals: dict[str, dict[str, bool]] = {}
 
     for msg in history:
-        if msg.recipe_name and msg.message_type in ("proposal", "pivot", "lock"):
+        if msg.recipe_name and msg.message_type in ("proposal", "pivot"):
             key = msg.recipe_name.lower()
             if key not in approvals:
                 order.append(key)

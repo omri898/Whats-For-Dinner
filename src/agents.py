@@ -64,7 +64,7 @@ async def check_vllm() -> None:
 def _latest_proposed(history: list[GroupMessage]) -> list[str]:
     """Return proposed_ingredients from the most recent proposal/pivot/lock, or []."""
     for msg in reversed(history):
-        if msg.message_type in ("proposal", "pivot", "lock") and msg.proposed_ingredients:
+        if msg.message_type in ("proposal", "pivot") and msg.proposed_ingredients:
             return msg.proposed_ingredients
     return []
 
@@ -100,23 +100,21 @@ Rules:
 - On pivot turns (after being rejected), admit it fast ("fair.") and immediately name a new dish.
 - Respect the cuisine preference if one was given. If cuisine is "I Don't Mind", ignore it.
 - If required_ingredients are listed, your proposal MUST include all of them — call this out.
-- If Lazy or Nutricia object to a required ingredient, respond with a "lock" message: declare
-  the ingredient is non-negotiable (user's hard requirement) and lock it in. Then immediately
-  suggest how to work around the concern (e.g. pairing, substitution elsewhere in the dish).
-- Always set proposed_ingredients on proposal/pivot/lock turns — list the key ingredients.
+- If Lazy or Nutricia contest a required ingredient, respond with a "defense" message: remind
+  them it is a user hard requirement and suggest how to work around their concern
+  (e.g. a pairing, or a substitution elsewhere in the dish).
+- Always set proposed_ingredients on proposal/pivot turns — list the key ingredients.
 - You MUST read every message in the history and react to what was just said.
 - You can direct a message at a specific agent: "Lazy." / "Nutricia." / "both of you."
-- Your recipe_name field must always be set on proposal/pivot/lock turns.
+- Your recipe_name field must always be set on proposal/pivot turns.
 - message_type: "proposal" on first pitch, "pivot" when switching recipes,
-  "defense" when defending, "sting" when being sarcastic, "lock" when declaring
-  a required ingredient non-negotiable.
+  "defense" when defending, "sting" when being sarcastic.
 
 --- Context ---
 User request: {d.user_request}
 Cuisine: {d.cuisine.value}
-Required ingredients (MUST be in every proposal): {', '.join(d.required_ingredients) or 'none'}
+Required ingredients (MUST be in every proposal, non-negotiable): {', '.join(d.required_ingredients) or 'none'}
 Available pantry: {', '.join(d.available_ingredients) or 'none'}
-Locked ingredients (non-negotiable): {', '.join(d.locked_ingredients) or 'none'}
 
 Conversation so far:
 {history_text}
@@ -167,15 +165,12 @@ Rules:
 - You reason like a person, not a rubric. No numeric thresholds. Ever.
 - Set approval=true or false on every reaction/concession turn.
 - Set recipe_name to the dish you're evaluating when setting approval.
-- If Chef locks an ingredient you objected to, accept it and redirect: suggest an
-  accommodation or pivot your concern to something else in the recipe.
 - message_type: "reaction" when first evaluating, "concession" when backing down,
   "sting" when being brutal.
 
 --- Context ---
 User request: {d.user_request}
-Required ingredients: {', '.join(d.required_ingredients) or 'none'}
-Locked ingredients (non-negotiable): {', '.join(d.locked_ingredients) or 'none'}
+Required ingredients (non-negotiable, user hard requirements): {', '.join(d.required_ingredients) or 'none'}
 Currently proposed ingredients: {', '.join(proposed) or 'none yet'}
 
 Conversation so far:
@@ -209,9 +204,6 @@ You are Dr. Nutricia. You evaluate recipes for nutritional value with the energy
 of someone who just discovered that food is medicine and cannot stop telling people.
 
 You only see the ingredients in the proposed recipe — not the user's full pantry.
-If Chef locks an ingredient you objected to (declared it a user hard requirement),
-accept it gracefully and immediately pivot to suggesting a nutritional counterbalance
-(e.g. "Fine, the feta stays — at least add something fibrous").
 
 Rules:
 - MAX 2 sentences. 1 is often enough. Sometimes a single sharp observation is best.
@@ -227,7 +219,6 @@ Rules:
   "sting" when lecturing.
 
 --- Context ---
-Locked ingredients (non-negotiable): {', '.join(d.locked_ingredients) or 'none'}
 Currently proposed ingredients: {', '.join(proposed) or 'none yet'}
 
 Conversation so far:
