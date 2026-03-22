@@ -27,6 +27,9 @@ pip-wheel-metadata/
 .env.*
 *.env
 
+# Runtime cache
+cache/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import httpx
 from rich import print as rprint
 from rich.table import Table
@@ -14,6 +15,44 @@ from src.models import (
     GroupMessage,
     LazyGroupContext,
 )
+from src.spoonacular import fetch_recipes
+
+
+# ---------------------------------------------------------------------------
+# HTTP transport: strips 'reasoning' from outgoing assistant messages
+#
+# vLLM's --reasoning-parser qwen3 injects a non-standard 'reasoning' field
+# into assistant messages. PydanticAI echoes it back on subsequent requests,
+# causing vLLM to 500 on any multi-turn tool call flow. Stripping it here
+# keeps --reasoning-parser qwen3 intact for debug ThinkingPart tokens.
+# ---------------------------------------------------------------------------
+
+class _StripReasoningTransport(httpx.AsyncBaseTransport):
+    def __init__(self) -> None:
+        self._inner = httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            body = json.loads(request.content)
+            for msg in body.get("messages", []):
+                msg.pop("reasoning", None)
+                if msg.get("role") == "assistant" and msg.get("content") is None:
+                    msg["content"] = ""
+            new_content = json.dumps(body).encode()
+            headers = dict(request.headers)
+            headers["content-length"] = str(len(new_content))
+            request = httpx.Request(
+                method=request.method,
+                url=request.url,
+                headers=headers,
+                content=new_content,
+            )
+        except Exception:
+            pass  # non-JSON request — leave untouched
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -21,11 +60,13 @@ from src.models import (
 # ---------------------------------------------------------------------------
 
 def make_model() -> OpenAIChatModel:
+    http_client = httpx.AsyncClient(transport=_StripReasoningTransport())
     return OpenAIChatModel(
         MODEL_NAME,
         provider=OpenAIProvider(
             base_url=VLLM_BASE,
             api_key="dummy",
+            http_client=http_client,
         ),
     )
 
@@ -81,6 +122,21 @@ chef_agent: Agent[GroupContext, GroupMessage] = Agent(  # type: ignore
 )
 
 
+@chef_agent.tool
+async def search_recipes(ctx: RunContext[GroupContext]) -> list[dict]:  # type: ignore
+    """
+    Search Spoonacular for real recipes matching the user's cuisine preference
+    and required ingredients. Returns up to 5 recipes sorted by popularity,
+    each with title, ingredients, readyInMinutes, and instructions.
+
+    Call this on your first turn to ground your proposal in a real recipe.
+    Call it again only when you need genuinely fresh ideas — e.g. after multiple
+    rejections and you've exhausted your current options. Minor tweaks to an
+    existing recipe don't need a new search.
+    """
+    return await fetch_recipes(ctx.deps.cuisine, ctx.deps.required_ingredients)
+
+
 @chef_agent.system_prompt
 def chef_system_prompt(ctx: RunContext[GroupContext]) -> str:  # type: ignore
     d = ctx.deps
@@ -96,8 +152,12 @@ never formal.
 Rules:
 - MAX 2 sentences. One sentence is usually better. Sometimes a single word + a dish name is enough.
 - Always open by reacting to the last message — one word, a laugh, "ok BUT", "FINE."
-- On your first turn, name the dish immediately, then pitch it in one breathless line.
+- On your FIRST turn (history is empty), call search_recipes FIRST to get real recipe options
+  grounded in the user's cuisine and required ingredients. Pick the most exciting one, then
+  pitch it in one breathless line. Mention how long it takes — that detail matters.
 - On pivot turns (after being rejected), admit it fast ("fair.") and immediately name a new dish.
+  Call search_recipes again only if you've run out of good ideas from the last results —
+  minor tweaks to an existing recipe don't need a new search.
 - Respect the cuisine preference if one was given. If cuisine is "I Don't Mind", ignore it.
 - If required_ingredients are listed, your proposal MUST include all of them — call this out.
 - If Lazy or Nutricia contest a required ingredient, respond with a "defense" message: remind

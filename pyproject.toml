@@ -6,4 +6,5 @@ dependencies = [
     "pydantic-ai[openai]",
     "rich",
     "httpx",
+    "python-dotenv",
 ]
