@@ -38,6 +38,8 @@ class GroupMessage(BaseModel):
     # Only set on proposal/pivot turns:
     recipe_name: str | None = None
     proposed_ingredients: list[str] | None = None  # ingredients in the proposed recipe
+    estimated_time: str | None = None              # e.g. "35 minutes"
+    cooking_summary: str | None = None             # 2-4 sentence how-to summary
     # Only set on reaction/concession turns:
     approval: bool | None = None
 
@@ -65,6 +67,10 @@ class GroupContext(BaseModel):
     agreed_recipes: list[str] = Field(
         default_factory=list,
         description="Names of recipes agreed upon in prior rounds. Empty in round 1. Used by Chef to avoid similar proposals.",
+    )
+    search_results_this_round: list[dict] = Field(
+        default_factory=list,
+        description="recipe_search hits from Chef's first search this round. Cleared between rounds. Injected into Chef's prompt for pivot turns.",
     )
     history: list[GroupMessage] = Field(default_factory=list)
 

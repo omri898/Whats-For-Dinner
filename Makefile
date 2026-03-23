@@ -8,13 +8,13 @@ notebook:
 	jupyter notebook notebook.ipynb
 
 test-chef:
-	conda run --no-capture-output -n dinner python scripts/test_chef.py
+	conda run --no-capture-output -n dinner env PYTHONPATH=. python scripts/test_chef.py
 
 test-round:
-	conda run --no-capture-output -n dinner python scripts/test_one_round.py
+	conda run --no-capture-output -n dinner env PYTHONPATH=. python scripts/test_one_round.py
 
 test-discussion:
-	conda run --no-capture-output -n dinner python scripts/test_discussion.py
+	conda run --no-capture-output -n dinner env PYTHONPATH=. python scripts/test_discussion.py
 
 check-vllm:
 	conda run --no-capture-output -n dinner python -c "import asyncio; from src.agents import check_vllm; asyncio.run(check_vllm())"

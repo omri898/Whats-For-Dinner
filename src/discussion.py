@@ -68,8 +68,69 @@ def _print_message(msg: GroupMessage, turn: int, debug: bool = False) -> None:
         border_style=color,
     ))
 
+    if msg.message_type in ("proposal", "pivot") and msg.agent == "chef":
+        if any([msg.estimated_time, msg.cooking_summary, msg.proposed_ingredients]):
+            lines: list[str] = []
+            if msg.estimated_time:
+                lines.append(f"[bold]Time:[/bold] {msg.estimated_time}")
+            if msg.proposed_ingredients:
+                lines.append(f"[bold]Ingredients:[/bold] {', '.join(msg.proposed_ingredients)}")
+            if msg.cooking_summary:
+                lines.append(f"\n[bold]How to make it:[/bold]\n{msg.cooking_summary}")
+            console.print(Panel(
+                "\n".join(lines),
+                title="[bold red]Recipe Detail[/bold red]",
+                border_style="dim red",
+                padding=(0, 1),
+            ))
+
     if debug and msg.proposed_ingredients:
         console.print(f"  [dim]proposed_ingredients: {msg.proposed_ingredients}[/dim]")
+
+
+def _print_msg_parts(m: object, display_name: str, turn_num: int) -> None:
+    """Print all debug-relevant parts of a single ModelMessage as they stream in."""
+    if not hasattr(m, "parts"):
+        return
+    for part in m.parts:  # type: ignore[attr-defined]
+        if isinstance(part, SystemPromptPart):
+            console.print(Panel(
+                part.content,
+                title="[bold cyan]System Prompt[/bold cyan]",
+                border_style="cyan",
+            ))
+        elif isinstance(part, UserPromptPart):
+            content = part.content if isinstance(part.content, str) else json.dumps(part.content, indent=2)
+            console.print(Panel(
+                content,
+                title="[bold blue]User Prompt[/bold blue]",
+                border_style="blue",
+            ))
+        elif isinstance(part, ThinkingPart):
+            console.print(Panel(
+                part.content,
+                title="[bold magenta]Thinking / Reasoning[/bold magenta]",
+                border_style="magenta",
+            ))
+        elif isinstance(part, ToolCallPart):
+            args_str = part.args if isinstance(part.args, str) else json.dumps(part.args, indent=2)
+            console.print(Panel(
+                f"tool: {part.tool_name}\nargs: {args_str}",
+                title="[bold yellow]Tool Call[/bold yellow]",
+                border_style="yellow",
+            ))
+        elif isinstance(part, ToolReturnPart):
+            console.print(Panel(
+                str(part.content),
+                title=f"[bold yellow]Tool Return · {part.tool_name}[/bold yellow]",
+                border_style="yellow",
+            ))
+        elif isinstance(part, TextPart) and part.content.strip():
+            console.print(Panel(
+                part.content,
+                title="[bold white]Raw LLM Text[/bold white]",
+                border_style="white",
+            ))
 
 
 def _round_agreement(history: list[GroupMessage]) -> str | None:
@@ -158,59 +219,29 @@ async def run_round(
         agent = AGENT_MAP[agent_name]
         display_name = AGENT_DISPLAY[agent_name][0]
 
-        with console.status(f"[dim]{display_name} is thinking...[/dim]"):
-            result = await agent.run("Your turn.", deps=context)
-            if not debug:
-                time.sleep(MESSAGE_PAUSE_SECONDS)
-
-        msg = result.output
-        context.history.append(msg)
-        _print_message(msg, turn_num, debug=debug)
-
         if debug:
+            # Stream via iter() so debug output appears even if the run crashes.
             console.print(f"\n[dim bold]── DEBUG: {display_name} (turn {turn_num}) ──[/dim bold]")
-            for m in result.all_messages():
-                if not hasattr(m, "parts"):
-                    continue
-                for part in m.parts:
-                    if isinstance(part, SystemPromptPart):
-                        console.print(Panel(
-                            part.content,
-                            title="[bold cyan]System Prompt[/bold cyan]",
-                            border_style="cyan",
-                        ))
-                    elif isinstance(part, UserPromptPart):
-                        content = part.content if isinstance(part.content, str) else json.dumps(part.content, indent=2)
-                        console.print(Panel(
-                            content,
-                            title="[bold blue]User Prompt[/bold blue]",
-                            border_style="blue",
-                        ))
-                    elif isinstance(part, ThinkingPart):
-                        console.print(Panel(
-                            part.content,
-                            title="[bold magenta]Thinking / Reasoning[/bold magenta]",
-                            border_style="magenta",
-                        ))
-                    elif isinstance(part, ToolCallPart):
-                        args_str = part.args if isinstance(part.args, str) else json.dumps(part.args, indent=2)
-                        console.print(Panel(
-                            f"tool: {part.tool_name}\nargs: {args_str}",
-                            title="[bold yellow]Tool Call[/bold yellow]",
-                            border_style="yellow",
-                        ))
-                    elif isinstance(part, ToolReturnPart):
-                        console.print(Panel(
-                            str(part.content),
-                            title=f"[bold yellow]Tool Return · {part.tool_name}[/bold yellow]",
-                            border_style="yellow",
-                        ))
-                    elif isinstance(part, TextPart) and part.content.strip():
-                        console.print(Panel(
-                            part.content,
-                            title="[bold white]Raw LLM Text[/bold white]",
-                            border_style="white",
-                        ))
+            seen = 0
+            crashed = False
+            async with agent.iter("Your turn.", deps=context) as agent_run:
+                try:
+                    async for _node in agent_run:
+                        all_msgs = agent_run.all_messages()
+                        for m in all_msgs[seen:]:
+                            _print_msg_parts(m, display_name, turn_num)
+                        seen = len(all_msgs)
+                except Exception as exc:
+                    console.print(f"\n[bold red]Agent crashed: {exc}[/bold red]")
+                    for m in agent_run.all_messages()[seen:]:
+                        _print_msg_parts(m, display_name, turn_num)
+                    crashed = True
+
+            if crashed:
+                console.print("[dim]── Turn aborted — falling back to best so far ──[/dim]")
+                break
+
+            result = agent_run.result
             console.print(Panel(
                 result.output.model_dump_json(indent=2),
                 title="[bold green]Structured Output (GroupMessage)[/bold green]",
@@ -218,6 +249,28 @@ async def run_round(
             ))
             console.print("[dim]── Press Enter for next agent ──[/dim]", end=" ")
             input()
+        else:
+            with console.status(f"[dim]{display_name} is thinking...[/dim]"):
+                result = await agent.run("Your turn.", deps=context)
+                time.sleep(MESSAGE_PAUSE_SECONDS)
+
+        msg = result.output
+        context.history.append(msg)
+        _print_message(msg, turn_num, debug=debug)
+
+        # Capture recipe_search results on Chef's first search this round
+        if agent_name == "chef" and not context.search_results_this_round:
+            for m in result.all_messages():
+                if not hasattr(m, "parts"):
+                    continue
+                for part in m.parts:
+                    if isinstance(part, ToolReturnPart) and part.tool_name == "recipe_search":
+                        try:
+                            hits = json.loads(part.content)
+                            if isinstance(hits, list):
+                                context.search_results_this_round = hits
+                        except Exception:
+                            pass
 
         # Exit on agreement only after MIN_TURNS, on full rotation boundaries
         if turn_num >= MIN_TURNS and turn_num % len(TURN_ORDER) == 0:
@@ -275,6 +328,7 @@ async def run_all_rounds(
     async with chef_agent:
         for round_num in range(1, num_rounds + 1):
             context.history = []
+            context.search_results_this_round = []
             context.agreed_recipes = list(picks)
 
             pick, _ = await run_round(context, round_num=round_num, debug=debug)
