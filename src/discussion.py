@@ -7,7 +7,14 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
-from pydantic_ai.messages import ThinkingPart  # type: ignore
+from pydantic_ai.messages import (  # type: ignore
+    ThinkingPart,
+    TextPart,
+    SystemPromptPart,
+    UserPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 
 from src.config import MAX_TURNS, MESSAGE_PAUSE_SECONDS, MIN_TURNS, TURN_ORDER
 from src.models import (
@@ -161,15 +168,56 @@ async def run_round(
         _print_message(msg, turn_num, debug=debug)
 
         if debug:
+            console.print(f"\n[dim bold]── DEBUG: {display_name} (turn {turn_num}) ──[/dim bold]")
             for m in result.all_messages():
-                if hasattr(m, "parts"):
-                    for part in m.parts:
-                        if isinstance(part, ThinkingPart):
-                            console.print(Panel(
-                                part.content,
-                                title="[bold magenta]Thinking[/bold magenta]",
-                                border_style="magenta",
-                            ))
+                if not hasattr(m, "parts"):
+                    continue
+                for part in m.parts:
+                    if isinstance(part, SystemPromptPart):
+                        console.print(Panel(
+                            part.content,
+                            title="[bold cyan]System Prompt[/bold cyan]",
+                            border_style="cyan",
+                        ))
+                    elif isinstance(part, UserPromptPart):
+                        content = part.content if isinstance(part.content, str) else json.dumps(part.content, indent=2)
+                        console.print(Panel(
+                            content,
+                            title="[bold blue]User Prompt[/bold blue]",
+                            border_style="blue",
+                        ))
+                    elif isinstance(part, ThinkingPart):
+                        console.print(Panel(
+                            part.content,
+                            title="[bold magenta]Thinking / Reasoning[/bold magenta]",
+                            border_style="magenta",
+                        ))
+                    elif isinstance(part, ToolCallPart):
+                        args_str = part.args if isinstance(part.args, str) else json.dumps(part.args, indent=2)
+                        console.print(Panel(
+                            f"tool: {part.tool_name}\nargs: {args_str}",
+                            title="[bold yellow]Tool Call[/bold yellow]",
+                            border_style="yellow",
+                        ))
+                    elif isinstance(part, ToolReturnPart):
+                        console.print(Panel(
+                            str(part.content),
+                            title=f"[bold yellow]Tool Return · {part.tool_name}[/bold yellow]",
+                            border_style="yellow",
+                        ))
+                    elif isinstance(part, TextPart) and part.content.strip():
+                        console.print(Panel(
+                            part.content,
+                            title="[bold white]Raw LLM Text[/bold white]",
+                            border_style="white",
+                        ))
+            console.print(Panel(
+                result.output.model_dump_json(indent=2),
+                title="[bold green]Structured Output (GroupMessage)[/bold green]",
+                border_style="green",
+            ))
+            console.print("[dim]── Press Enter for next agent ──[/dim]", end=" ")
+            input()
 
         # Exit on agreement only after MIN_TURNS, on full rotation boundaries
         if turn_num >= MIN_TURNS and turn_num % len(TURN_ORDER) == 0:
@@ -224,13 +272,14 @@ async def run_all_rounds(
 
     picks: list[str] = []
 
-    for round_num in range(1, num_rounds + 1):
-        context.history = []
-        context.agreed_recipes = list(picks)
+    async with chef_agent:
+        for round_num in range(1, num_rounds + 1):
+            context.history = []
+            context.agreed_recipes = list(picks)
 
-        pick, _ = await run_round(context, round_num=round_num, debug=debug)
-        if pick:
-            picks.append(pick)
+            pick, _ = await run_round(context, round_num=round_num, debug=debug)
+            if pick:
+                picks.append(pick)
 
     return picks
 

@@ -43,6 +43,9 @@ Thumbs.db
 # Claude Code internal
 .claude/
 
+# Standalone demos (gitignored — separate projects)
+demos/
+
 plans/
 project.md
 CLAUDE.md

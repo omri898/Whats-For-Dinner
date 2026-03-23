@@ -1,4 +1,3 @@
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,8 +9,3 @@ MAX_TURNS     = 12      # max turns per round before falling back to best partia
 MIN_TURNS     = 4       # min turns per round — Chef must have at least one follow-up cycle
 TURN_ORDER    = ["chef", "lazy", "nutricia"]
 
-SPOONACULAR_API_KEY: str = os.environ.get("SPOONACULAR_API_KEY", "")
-if not SPOONACULAR_API_KEY:
-    raise ValueError(
-        "SPOONACULAR_API_KEY is not set. Add it to your .env file or environment."
-    )

@@ -41,7 +41,7 @@ def prompt_cuisine() -> Cuisine:
     col_size = 10
     lines: list[str] = []
     for i, c in enumerate(cuisines, 1):
-        default = " (default)" if c == Cuisine.I_DONT_MIND else ""
+        default = " (default)" if c == Cuisine.ANYTHING else ""
         lines.append(f"{i:2}. {c.value}{default}")
 
     # Split into 3 columns
@@ -69,7 +69,7 @@ def prompt_cuisine() -> Cuisine:
             return cuisines[idx - 1]
     except ValueError:
         pass
-    return Cuisine.I_DONT_MIND
+    return Cuisine.ANYTHING
 
 
 def prompt_ingredients() -> list[str]:

@@ -27,7 +27,8 @@ async def main() -> None:
     )
 
     rprint("\n[bold]Running Chef Enthusiastico...[/bold]\n")
-    result = await chef_agent.run("Your turn.", deps=context)
+    async with chef_agent:
+        result = await chef_agent.run("Your turn.", deps=context)
     msg = result.output
 
     rprint(Panel(

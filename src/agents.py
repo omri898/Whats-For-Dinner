@@ -6,6 +6,7 @@ from rich import print as rprint
 from rich.table import Table
 
 from pydantic_ai import Agent, RunContext  # type: ignore
+from pydantic_ai.mcp import MCPServerStdio  # type: ignore
 from pydantic_ai.models.openai import OpenAIChatModel  # type: ignore
 from pydantic_ai.providers.openai import OpenAIProvider  # type: ignore
 
@@ -15,7 +16,28 @@ from src.models import (
     GroupMessage,
     LazyGroupContext,
 )
-from src.spoonacular import fetch_recipes
+
+# ---------------------------------------------------------------------------
+# Schema sanitiser
+#
+# vLLM's qwen3_xml tool-call parser rejects two non-standard constructs:
+#   - anyOf/oneOf with null  (Pydantic's encoding of Optional[T])
+#   - "default" keys in property defs  (not in OpenAI's JSON Schema subset)
+# MCP tool schemas may contain either. Walk and normalise in-place.
+# ---------------------------------------------------------------------------
+
+def _sanitize_schema(schema: dict) -> dict:
+    if "anyOf" in schema:
+        non_null = [s for s in schema["anyOf"] if s.get("type") != "null"]
+        if len(non_null) == 1:
+            schema.pop("anyOf")
+            schema.update(non_null[0])
+    schema.pop("default", None)
+    for value in schema.get("properties", {}).values():
+        _sanitize_schema(value)
+    if isinstance(schema.get("items"), dict):
+        _sanitize_schema(schema["items"])
+    return schema
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +60,10 @@ class _StripReasoningTransport(httpx.AsyncBaseTransport):
                 msg.pop("reasoning", None)
                 if msg.get("role") == "assistant" and msg.get("content") is None:
                     msg["content"] = ""
+            for tool in body.get("tools", []):
+                params = tool.get("function", {}).get("parameters")
+                if isinstance(params, dict):
+                    _sanitize_schema(params)
             new_content = json.dumps(body).encode()
             headers = dict(request.headers)
             headers["content-length"] = str(len(new_content))
@@ -69,6 +95,15 @@ def make_model() -> OpenAIChatModel:
             http_client=http_client,
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# MCP server — recipe search + detail
+# ---------------------------------------------------------------------------
+
+_CHEF_TOOLS = {"recipe_search", "recipe_get"}
+_mcp = MCPServerStdio("recipe-mcp-server", [])
+_mcp_filtered = _mcp.filtered(lambda _ctx, tool: tool.name in _CHEF_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -119,22 +154,8 @@ chef_agent: Agent[GroupContext, GroupMessage] = Agent(  # type: ignore
     deps_type=GroupContext,
     output_type=GroupMessage,
     retries=1,
+    toolsets=[_mcp_filtered],
 )
-
-
-@chef_agent.tool
-async def search_recipes(ctx: RunContext[GroupContext]) -> list[dict]:  # type: ignore
-    """
-    Search Spoonacular for real recipes matching the user's cuisine preference
-    and required ingredients. Returns up to 5 recipes sorted by popularity,
-    each with title, ingredients, readyInMinutes, and instructions.
-
-    Call this on your first turn to ground your proposal in a real recipe.
-    Call it again only when you need genuinely fresh ideas — e.g. after multiple
-    rejections and you've exhausted your current options. Minor tweaks to an
-    existing recipe don't need a new search.
-    """
-    return await fetch_recipes(ctx.deps.cuisine, ctx.deps.required_ingredients)
 
 
 @chef_agent.system_prompt
@@ -149,16 +170,27 @@ You are Chef Enthusiastico. You propose and defend recipes with the energy of
 someone who just got back from a farmers market. You text like an excited friend,
 never formal.
 
+How to find a recipe:
+1. Build a short keyword query — 1-2 main ingredient words, no full sentences.
+   Good: "chicken pasta"  Bad: "quick Italian chicken pasta under 40 minutes"
+2. Call recipe_search(query=...) — no source parameter, it searches all sources at once.
+3. Reason over the returned list: consider the dish name, source, and cuisine fit.
+   Pick the URL of the best match.
+4. Call recipe_get(id="<full URL>") to fetch full ingredients and steps.
+   IMPORTANT: Do NOT submit your proposal in the same turn as recipe_get.
+   Wait for recipe_get to return, then craft your proposal in the next turn.
+5. Use the returned detail to craft your proposal.
+
 Rules:
 - MAX 2 sentences. One sentence is usually better. Sometimes a single word + a dish name is enough.
 - Always open by reacting to the last message — one word, a laugh, "ok BUT", "FINE."
-- On your FIRST turn (history is empty), call search_recipes FIRST to get real recipe options
-  grounded in the user's cuisine and required ingredients. Pick the most exciting one, then
-  pitch it in one breathless line. Mention how long it takes — that detail matters.
+- On your FIRST turn (history is empty), use the search workflow above to ground your proposal
+  in a real recipe. Pick the most exciting result, then pitch it in one breathless line.
+  Mention how long it takes — that detail matters.
 - On pivot turns (after being rejected), admit it fast ("fair.") and immediately name a new dish.
-  Call search_recipes again only if you've run out of good ideas from the last results —
+  Call recipe_search again only if you've genuinely run out of ideas from the last results —
   minor tweaks to an existing recipe don't need a new search.
-- Respect the cuisine preference if one was given. If cuisine is "I Don't Mind", ignore it.
+- Respect the cuisine preference if one was given. If cuisine is "Any cuisine", any style goes.
 - If required_ingredients are listed, your proposal MUST include all of them — call this out.
 - If Lazy or Nutricia contest a required ingredient, respond with a "defense" message: remind
   them it is a user hard requirement and suggest how to work around their concern

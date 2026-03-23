@@ -14,34 +14,14 @@ class LazyLevel(str, Enum):
 
 
 class Cuisine(str, Enum):
-    AFRICAN          = "African"
-    ASIAN            = "Asian"
-    AMERICAN         = "American"
-    BRITISH          = "British"
-    CAJUN            = "Cajun"
-    CARIBBEAN        = "Caribbean"
-    CHINESE          = "Chinese"
-    EASTERN_EUROPEAN = "Eastern European"
-    EUROPEAN         = "European"
-    FRENCH           = "French"
-    GERMAN           = "German"
-    GREEK            = "Greek"
-    INDIAN           = "Indian"
-    IRISH            = "Irish"
-    ITALIAN          = "Italian"
-    JAPANESE         = "Japanese"
-    JEWISH           = "Jewish"
-    KOREAN           = "Korean"
-    LATIN_AMERICAN   = "Latin American"
-    MEDITERRANEAN    = "Mediterranean"
-    MEXICAN          = "Mexican"
-    MIDDLE_EASTERN   = "Middle Eastern"
-    NORDIC           = "Nordic"
-    SOUTHERN         = "Southern"
-    SPANISH          = "Spanish"
-    THAI             = "Thai"
-    VIETNAMESE       = "Vietnamese"
-    I_DONT_MIND      = "I Don't Mind"
+    AFRICAN        = "African"
+    AMERICAN       = "American"
+    ASIAN          = "Asian"
+    EUROPEAN       = "European"
+    LATIN_AMERICAN = "Latin American"
+    MIDDLE_EASTERN = "Middle Eastern"
+    MEDITERRANEAN  = "Mediterranean"
+    ANYTHING       = "Any cuisine"
 
     def __str__(self) -> str:
         return self.value
@@ -73,7 +53,7 @@ class GroupContext(BaseModel):
     lazy_level is intentionally absent here; only LazyGroupContext carries it.
     """
     user_request: str
-    cuisine: Cuisine = Cuisine.I_DONT_MIND
+    cuisine: Cuisine = Cuisine.ANYTHING
     required_ingredients: list[str] = Field(
         default_factory=list,
         description="Ingredients the user insists must appear in every recipe. Non-negotiable from the start.",

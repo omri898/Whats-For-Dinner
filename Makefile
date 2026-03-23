@@ -1,6 +1,9 @@
 run:
 	conda run --no-capture-output -n dinner python -m src.main
 
+run-debug:
+	conda run --no-capture-output -n dinner python -m src.main --debug
+
 notebook:
 	jupyter notebook notebook.ipynb
 
@@ -15,6 +18,11 @@ test-discussion:
 
 check-vllm:
 	conda run --no-capture-output -n dinner python -c "import asyncio; from src.agents import check_vllm; asyncio.run(check_vllm())"
+
+check-mcp:
+	@command -v recipe-mcp-server >/dev/null 2>&1 \
+		&& echo "recipe-mcp-server found: $$(which recipe-mcp-server)" \
+		|| (echo "recipe-mcp-server not found. Install with: npm install -g recipe-mcp-server" && exit 1)
 
 start-vllm:
 	rm -rf ~/.cache/vllm/torch_compile_cache
