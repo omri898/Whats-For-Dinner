@@ -47,8 +47,8 @@ async def main() -> None:
     ]
 
     context = LazyGroupContext(
-        user_request="The user wants to prepare dinner of cuisine Italian, using eggs, feta cheese.",
-        cuisine=Cuisine.ITALIAN,
+        user_request="The user wants to prepare dinner of cuisine European, using eggs, feta cheese.",
+        cuisine=Cuisine.EUROPEAN,
         required_ingredients=["eggs", "feta cheese"],
         available_ingredients=available,
         lazy_level=LazyLevel.COUCH,

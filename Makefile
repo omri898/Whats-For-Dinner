@@ -27,8 +27,10 @@ check-mcp:
 start-vllm:
 	rm -rf ~/.cache/vllm/torch_compile_cache
 	conda run --no-capture-output -n dinner python -m vllm.entrypoints.openai.api_server \
-		--model Qwen/Qwen3-14B-AWQ \
-		--served-model-name qwen3-14b \
+		--model Qwen/Qwen3.5-27B-GPTQ-Int4 \
+		--served-model-name qwen3.5-27b \
+		--quantization gptq_marlin \
+		--max-model-len 32768 \
 		--port 8001 \
 		--tool-call-parser qwen3_xml \
 		--enable-auto-tool-choice \

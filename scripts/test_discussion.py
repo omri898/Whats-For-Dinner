@@ -11,7 +11,7 @@ async def main() -> None:
     await check_vllm()
 
     picks = await run_all_rounds(
-        cuisine=Cuisine.ITALIAN,
+        cuisine=Cuisine.EUROPEAN,
         required_ingredients=["eggs", "feta cheese"],
         lazy_level=LazyLevel.MEDIUM,
     )
