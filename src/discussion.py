@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 from typing import IO
@@ -8,6 +9,7 @@ from typing import IO
 from rich.console import Console
 from rich.panel import Panel
 
+from pydantic_ai import Agent  # type: ignore
 from pydantic_ai.messages import (  # type: ignore
     ThinkingPart,
     TextPart,
@@ -15,6 +17,10 @@ from pydantic_ai.messages import (  # type: ignore
     UserPromptPart,
     ToolCallPart,
     ToolReturnPart,
+    PartStartEvent,
+    PartDeltaEvent,
+    TextPartDelta,
+    ThinkingPartDelta,
 )
 
 from src.config import MAX_TURNS, MESSAGE_PAUSE_SECONDS, MIN_TURNS, TURN_ORDER
@@ -134,7 +140,13 @@ def _print_recipe_card(history: list[GroupMessage], agreed_name: str) -> None:
         ))
 
 
-def _print_msg_parts(m: object, display_name: str, turn_num: int) -> None:
+def _print_msg_parts(
+    m: object,
+    display_name: str,
+    turn_num: int,
+    *,
+    skip_thinking_and_text: bool = False,
+) -> None:
     """Print all debug-relevant parts of a single ModelMessage as they stream in."""
     if not hasattr(m, "parts"):
         return
@@ -155,11 +167,12 @@ def _print_msg_parts(m: object, display_name: str, turn_num: int) -> None:
             ))
             _log("User Prompt", content)
         elif isinstance(part, ThinkingPart):
-            console.print(Panel(
-                part.content,
-                title="[bold magenta]Thinking / Reasoning[/bold magenta]",
-                border_style="magenta",
-            ))
+            if not skip_thinking_and_text:
+                console.print(Panel(
+                    part.content,
+                    title="[bold magenta]Thinking / Reasoning[/bold magenta]",
+                    border_style="magenta",
+                ))
             _log("Thinking", part.content)
         elif isinstance(part, ToolCallPart):
             args_str = part.args if isinstance(part.args, str) else json.dumps(part.args, indent=2)
@@ -178,11 +191,12 @@ def _print_msg_parts(m: object, display_name: str, turn_num: int) -> None:
             ))
             _log(f"Tool Return: {part.tool_name}", content_str)
         elif isinstance(part, TextPart) and part.content.strip():
-            console.print(Panel(
-                part.content,
-                title="[bold white]Raw LLM Text[/bold white]",
-                border_style="white",
-            ))
+            if not skip_thinking_and_text:
+                console.print(Panel(
+                    part.content,
+                    title="[bold white]Raw LLM Text[/bold white]",
+                    border_style="white",
+                ))
             _log("Raw LLM Text", part.content)
 
 
@@ -283,11 +297,39 @@ async def run_round(
             crashed = False
             async with agent.iter("Your turn.", deps=context) as agent_run:
                 try:
-                    async for _node in agent_run:
-                        all_msgs = agent_run.all_messages()
-                        for m in all_msgs[seen:]:
-                            _print_msg_parts(m, display_name, turn_num)
-                        seen = len(all_msgs)
+                    async for node in agent_run:
+                        if Agent.is_model_request_node(node):
+                            # Stream tokens live as they arrive
+                            did_stream = False
+                            async with node.stream(agent_run.ctx) as stream:
+                                async for event in stream:
+                                    if isinstance(event, PartStartEvent):
+                                        if isinstance(event.part, ThinkingPart):
+                                            console.print("\n[bold magenta]◆ Thinking[/bold magenta]")
+                                            did_stream = True
+                                        elif isinstance(event.part, TextPart):
+                                            console.print("\n[bold white]◆ Generating[/bold white]")
+                                            did_stream = True
+                                    elif isinstance(event, PartDeltaEvent):
+                                        if isinstance(event.delta, ThinkingPartDelta) and event.delta.content_delta:
+                                            sys.stdout.write(event.delta.content_delta)
+                                            sys.stdout.flush()
+                                        elif isinstance(event.delta, TextPartDelta):
+                                            sys.stdout.write(event.delta.content_delta)
+                                            sys.stdout.flush()
+                            if did_stream:
+                                sys.stdout.write("\n")
+                                sys.stdout.flush()
+                            # Print tool calls etc.; skip thinking/text (shown live above)
+                            all_msgs = agent_run.all_messages()
+                            for m in all_msgs[seen:]:
+                                _print_msg_parts(m, display_name, turn_num, skip_thinking_and_text=did_stream)
+                            seen = len(all_msgs)
+                        else:
+                            all_msgs = agent_run.all_messages()
+                            for m in all_msgs[seen:]:
+                                _print_msg_parts(m, display_name, turn_num)
+                            seen = len(all_msgs)
                 except Exception as exc:
                     console.print(f"\n[bold red]Agent crashed: {exc}[/bold red]")
                     for m in agent_run.all_messages()[seen:]:
