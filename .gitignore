@@ -53,3 +53,4 @@ feature-ideas.md
 notes.md
 notebook.ipynb
 test_vllm.py
+logs/

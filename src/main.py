@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.columns import Columns
 from rich.text import Text
 
 from src.agents import check_vllm
-from src.discussion import load_ingredients, run_all_rounds, display_recommendations
+from src.discussion import load_ingredients, run_all_rounds, display_recommendations, setup_log, close_log
 from src.models import Cuisine, LazyLevel
 
 console = Console()
@@ -116,6 +118,21 @@ def prompt_ingredients() -> list[str]:
 # ---------------------------------------------------------------------------
 
 async def async_main(debug: bool = False) -> None:
+    if debug:
+        logs_dir = Path("logs")
+        logs_dir.mkdir(exist_ok=True)
+        log_path = logs_dir / f"debug-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        setup_log(log_path)
+        console.print(f"[dim]Logging plain text to {log_path}[/dim]")
+
+    try:
+        await _async_main(debug=debug)
+    finally:
+        if debug:
+            close_log()
+
+
+async def _async_main(debug: bool = False) -> None:
     # Health check first
     try:
         await check_vllm()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import IO
 
 from rich.console import Console
 from rich.panel import Panel
@@ -26,6 +27,31 @@ from src.models import (
 from src.agents import chef_agent, lazy_agent, nutricia_agent
 
 console = Console()
+
+# ---------------------------------------------------------------------------
+# Plain-text log file (set by setup_log() when --debug is active)
+# ---------------------------------------------------------------------------
+
+_log_file: IO[str] | None = None
+
+
+def setup_log(path: Path) -> None:
+    global _log_file
+    _log_file = open(path, "w", encoding="utf-8")
+
+
+def close_log() -> None:
+    global _log_file
+    if _log_file is not None:
+        _log_file.close()
+        _log_file = None
+
+
+def _log(label: str, content: str) -> None:
+    if _log_file is not None:
+        _log_file.write(f"\n=== {label} ===\n{content}\n")
+        _log_file.flush()
+
 
 AGENT_DISPLAY = {
     "chef": ("Chef Enthusiastico", "red"),
@@ -54,38 +80,58 @@ def _print_message(msg: GroupMessage, turn: int, debug: bool = False) -> None:
     """Print a single discussion message with Rich formatting."""
     if msg.agent == "system":
         console.print(f"[dim]{msg.text}[/dim]")
+        _log("System", msg.text)
         return
 
     name, color = AGENT_DISPLAY.get(msg.agent, (msg.agent, "white"))
+    approval_label = ""
+    if msg.agent in ("lazy", "nutricia") and msg.approval is not None:
+        approval_label = " · " + ("Approved" if msg.approval else "Declined")
     subtitle = (
-        f"[dim]Turn {turn} · {msg.message_type} · → {msg.directed_at}"
-        f"{' · ' + msg.recipe_name if msg.recipe_name else ''}[/dim]"
+        f"Turn {turn} · {msg.message_type} · → {msg.directed_at}"
+        f"{' · ' + msg.recipe_name if msg.recipe_name else ''}"
+        f"{approval_label}"
     )
     console.print(Panel(
         msg.text,
         title=f"[bold {color}]{name}[/bold {color}]",
-        subtitle=subtitle,
+        subtitle=f"[dim]{subtitle}[/dim]",
         border_style=color,
     ))
-
-    if msg.message_type in ("proposal", "pivot") and msg.agent == "chef":
-        if any([msg.estimated_time, msg.cooking_summary, msg.proposed_ingredients]):
-            lines: list[str] = []
-            if msg.estimated_time:
-                lines.append(f"[bold]Time:[/bold] {msg.estimated_time}")
-            if msg.proposed_ingredients:
-                lines.append(f"[bold]Ingredients:[/bold] {', '.join(msg.proposed_ingredients)}")
-            if msg.cooking_summary:
-                lines.append(f"\n[bold]How to make it:[/bold]\n{msg.cooking_summary}")
-            console.print(Panel(
-                "\n".join(lines),
-                title="[bold red]Recipe Detail[/bold red]",
-                border_style="dim red",
-                padding=(0, 1),
-            ))
+    _log(f"{name} | {subtitle}", msg.text)
 
     if debug and msg.proposed_ingredients:
         console.print(f"  [dim]proposed_ingredients: {msg.proposed_ingredients}[/dim]")
+        _log("Proposed Ingredients", str(msg.proposed_ingredients))
+
+
+def _print_recipe_card(history: list[GroupMessage], agreed_name: str) -> None:
+    """Print a full recipe card for the agreed recipe at end of round."""
+    msg = next(
+        (m for m in reversed(history)
+         if m.agent == "chef"
+         and m.message_type in ("proposal", "pivot")
+         and m.recipe_name
+         and m.recipe_name.lower() == agreed_name.lower()),
+        None,
+    )
+    if not msg:
+        return
+    lines: list[str] = []
+    if msg.estimated_time:
+        lines.append(f"[bold]Time:[/bold] {msg.estimated_time}")
+    if msg.proposed_ingredients:
+        lines.append(f"[bold]Ingredients:[/bold] {', '.join(msg.proposed_ingredients)}")
+    instructions = msg.full_instructions or msg.cooking_summary
+    if instructions:
+        lines.append(f"\n[bold]Instructions:[/bold]\n{instructions}")
+    if lines:
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"[bold green]Recipe Card: {msg.recipe_name}[/bold green]",
+            border_style="green",
+            padding=(0, 1),
+        ))
 
 
 def _print_msg_parts(m: object, display_name: str, turn_num: int) -> None:
@@ -99,6 +145,7 @@ def _print_msg_parts(m: object, display_name: str, turn_num: int) -> None:
                 title="[bold cyan]System Prompt[/bold cyan]",
                 border_style="cyan",
             ))
+            _log("System Prompt", part.content)
         elif isinstance(part, UserPromptPart):
             content = part.content if isinstance(part.content, str) else json.dumps(part.content, indent=2)
             console.print(Panel(
@@ -106,12 +153,14 @@ def _print_msg_parts(m: object, display_name: str, turn_num: int) -> None:
                 title="[bold blue]User Prompt[/bold blue]",
                 border_style="blue",
             ))
+            _log("User Prompt", content)
         elif isinstance(part, ThinkingPart):
             console.print(Panel(
                 part.content,
                 title="[bold magenta]Thinking / Reasoning[/bold magenta]",
                 border_style="magenta",
             ))
+            _log("Thinking", part.content)
         elif isinstance(part, ToolCallPart):
             args_str = part.args if isinstance(part.args, str) else json.dumps(part.args, indent=2)
             console.print(Panel(
@@ -119,18 +168,22 @@ def _print_msg_parts(m: object, display_name: str, turn_num: int) -> None:
                 title="[bold yellow]Tool Call[/bold yellow]",
                 border_style="yellow",
             ))
+            _log("Tool Call", f"tool: {part.tool_name}\nargs: {args_str}")
         elif isinstance(part, ToolReturnPart):
+            content_str = str(part.content)
             console.print(Panel(
-                str(part.content),
+                content_str,
                 title=f"[bold yellow]Tool Return · {part.tool_name}[/bold yellow]",
                 border_style="yellow",
             ))
+            _log(f"Tool Return: {part.tool_name}", content_str)
         elif isinstance(part, TextPart) and part.content.strip():
             console.print(Panel(
                 part.content,
                 title="[bold white]Raw LLM Text[/bold white]",
                 border_style="white",
             ))
+            _log("Raw LLM Text", part.content)
 
 
 def _round_agreement(history: list[GroupMessage]) -> str | None:
@@ -207,10 +260,13 @@ async def run_round(
     console.print()
     console.rule(f"[bold blue]Round {round_num}[/bold blue]")
     console.print()
+    _log("Round", str(round_num))
 
     if debug:
+        ctx_json = context.model_dump_json(indent=2)
         console.print("[dim]Context at round start:[/dim]")
-        console.print(f"[dim]{context.model_dump_json(indent=2)}[/dim]")
+        console.print(f"[dim]{ctx_json}[/dim]")
+        _log("Context at round start", ctx_json)
 
     agreed: str | None = None
 
@@ -222,6 +278,7 @@ async def run_round(
         if debug:
             # Stream via iter() so debug output appears even if the run crashes.
             console.print(f"\n[dim bold]── DEBUG: {display_name} (turn {turn_num}) ──[/dim bold]")
+            _log("Turn", f"{display_name} (turn {turn_num})")
             seen = 0
             crashed = False
             async with agent.iter("Your turn.", deps=context) as agent_run:
@@ -242,11 +299,13 @@ async def run_round(
                 break
 
             result = agent_run.result
+            structured_json = result.output.model_dump_json(indent=2)
             console.print(Panel(
-                result.output.model_dump_json(indent=2),
+                structured_json,
                 title="[bold green]Structured Output (GroupMessage)[/bold green]",
                 border_style="green",
             ))
+            _log("Structured Output (GroupMessage)", structured_json)
             console.print("[dim]── Press Enter for next agent ──[/dim]", end=" ")
             input()
         else:
@@ -272,17 +331,22 @@ async def run_round(
                         except Exception:
                             pass
 
-        # Exit on agreement only after MIN_TURNS, on full rotation boundaries
-        if turn_num >= MIN_TURNS and turn_num % len(TURN_ORDER) == 0:
+        # Exit on agreement after MIN_TURNS (chef→lazy→nutricia→chef), checked every turn
+        if turn_num >= MIN_TURNS:
             agreed = _round_agreement(context.history)
             if agreed:
                 console.print()
                 console.print(f"[bold green]Agreement: {agreed}[/bold green]")
+                _log("Agreement", agreed)
+                _print_recipe_card(context.history, agreed)
                 break
     else:
         console.print()
         console.print("[bold yellow]MAX_TURNS reached — picking best candidate.[/bold yellow]")
         agreed = pick_best_from_round(context.history)
+        if agreed:
+            _log("Fallback pick", agreed)
+            _print_recipe_card(context.history, agreed)
 
     round_history = list(context.history)
     return agreed, round_history

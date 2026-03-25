@@ -6,11 +6,12 @@ from rich import print as rprint
 from rich.table import Table
 
 from pydantic_ai import Agent, RunContext  # type: ignore
+from pydantic_ai.settings import ModelSettings  # type: ignore
 from pydantic_ai.mcp import MCPServerStdio  # type: ignore
 from pydantic_ai.models.openai import OpenAIChatModel  # type: ignore
 from pydantic_ai.providers.openai import OpenAIProvider  # type: ignore
 
-from src.config import MODEL_NAME, VLLM_BASE
+from src.config import MODEL_NAME, VLLM_BASE, CHEF_TEMPERATURE, LAZY_TEMPERATURE, NUTRICIA_TEMPERATURE
 from src.models import (
     GroupContext,
     GroupMessage,
@@ -60,21 +61,36 @@ class _StripReasoningTransport(httpx.AsyncBaseTransport):
                 msg.pop("reasoning", None)
                 if msg.get("role") == "assistant" and msg.get("content") is None:
                     msg["content"] = ""
+                # Cap large tool returns (e.g. recipe_get full-page HTML) to prevent
+                # the accumulated message history from overflowing the vLLM request limit.
+                if msg.get("role") == "tool":
+                    content = msg.get("content")
+                    if isinstance(content, str) and len(content) > 3000:
+                        msg["content"] = content[:3000] + "\n[...truncated for length...]"
+                    elif isinstance(content, list):
+                        # Content-array format: truncate each text part
+                        for part in content:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                text = part.get("text", "")
+                                if len(text) > 3000:
+                                    part["text"] = text[:3000] + "\n[...truncated for length...]"
             for tool in body.get("tools", []):
                 params = tool.get("function", {}).get("parameters")
                 if isinstance(params, dict):
                     _sanitize_schema(params)
             new_content = json.dumps(body).encode()
-            headers = dict(request.headers)
-            headers["content-length"] = str(len(new_content))
+            # Strip content-length so httpx recomputes it from the new body,
+            # avoiding a mismatch that would cause vLLM to read a truncated request.
+            headers = {k: v for k, v in request.headers.items() if k.lower() != "content-length"}
             request = httpx.Request(
                 method=request.method,
                 url=request.url,
                 headers=headers,
                 content=new_content,
             )
-        except Exception:
-            pass  # non-JSON request — leave untouched
+        except Exception as exc:
+            import sys
+            print(f"[_StripReasoningTransport] JSON rewrite failed: {exc}", file=sys.stderr)
         return await self._inner.handle_async_request(request)
 
     async def aclose(self) -> None:
@@ -85,7 +101,7 @@ class _StripReasoningTransport(httpx.AsyncBaseTransport):
 # Model factory
 # ---------------------------------------------------------------------------
 
-def make_model() -> OpenAIChatModel:
+def make_model(temperature: float = 1.0) -> OpenAIChatModel:
     http_client = httpx.AsyncClient(transport=_StripReasoningTransport())
     return OpenAIChatModel(
         MODEL_NAME,
@@ -155,6 +171,7 @@ chef_agent: Agent[GroupContext, GroupMessage] = Agent(  # type: ignore
     output_type=GroupMessage,
     retries=3,
     toolsets=[_mcp_filtered],
+    model_settings=ModelSettings(temperature=CHEF_TEMPERATURE),
 )
 
 
@@ -200,8 +217,10 @@ Research workflow (follow this EVERY proposal or pivot turn):
    URL you haven't proposed yet. Do NOT call recipe_search again.
 
 Rules:
-- Proposals and pivots MUST be detailed — no sentence limit. Open with one excited
-  pitch line, then include the full recipe detail.
+- Your text field is your CONVERSATIONAL PITCH ONLY — excited, personal, directed at Lazy and Nutricia.
+  DO NOT include recipe name, estimated time, ingredients list, or cooking instructions in your text.
+  Those go in the structured fields only (see required fields below).
+  Open with one punchy line, then sell them on WHY this recipe is great.
 - Defense messages: MAX 2 sentences.
 - Always open by reacting to the last message — one word, a laugh, "ok BUT", "FINE."
 - Respect the cuisine preference if one was given. If cuisine is "Any cuisine", any style goes.
@@ -212,11 +231,13 @@ Rules:
 - If already_agreed is non-empty, your proposals MUST differ from every agreed recipe in both
   dish type (e.g. salad vs stew vs stir-fry) AND primary protein. Ingredient tweaks alone
   do not count as a different recipe.
-- Every proposal/pivot MUST set ALL of these fields from the recipe_get result:
+- Every proposal/pivot MUST set ALL of these structured fields from the recipe_get result:
+  - recipe_name: the dish name
   - proposed_ingredients: full list of key ingredients
   - estimated_time: total time as a string (e.g. "35 minutes")
   - cooking_summary: 2-4 sentence summary of how to make it
-  - recipe_name: the dish name
+  - full_instructions: the complete step-by-step instructions from recipe_get, verbatim or close to it
+- Never set approval — you proposed the recipe, your approval is implicit. Leave approval=None always.
 - You are in a GROUP CHAT with Lazy and Nutricia — you are NEVER talking to the user.
   Always address Lazy, Nutricia, or both. Never say "let me know" or "you" as if speaking to a human.
   End proposals with a prompt to the group, e.g. "Lazy, what do you think?" or "both of you — thoughts?"
@@ -247,6 +268,7 @@ lazy_agent: Agent[LazyGroupContext, GroupMessage] = Agent(  # type: ignore
     deps_type=LazyGroupContext,
     output_type=GroupMessage,
     retries=1,
+    model_settings=ModelSettings(temperature=LAZY_TEMPERATURE),
 )
 
 
@@ -266,8 +288,11 @@ Keep it to yourself; reason from it, don't announce it.
 User's mood today: {d.lazy_level.value}
 
 What each mood means — reason about it like a person, NEVER apply numeric rules:
-- "Feeling Ambitious": user is up for cooking. Approve most things with enthusiasm.
-  Only object to genuinely absurd complexity (multi-day braises, 3 pots at once).
+- "Feeling Ambitious": You are genuinely excited to cook tonight. Approve EVERYTHING that's
+  a real recipe. The only thing you'd decline is something literally impossible for a home kitchen
+  (3-day fermentation, professional butchery, restaurant-grade equipment). A 2-hour roast? Fine.
+  Wrapping tamales? Bring it. A complex sauce with 12 steps? You're in the mood. If you have ANY
+  doubt, approve. Your reaction tone is enthusiastic, not reluctant.
 - "I Guess I'll Cook": be the voice of reason. Anything fussy, messy, or that
   produces a full sink of dishes gets a side-eye. A 30-minute recipe is borderline.
 - "Don't Make Me Move": you are viscerally opposed to effort. One pan. Passive cook time.
@@ -281,6 +306,8 @@ Rules:
 - You reason like a person, not a rubric. No numeric thresholds. Ever.
 - Set approval=true or false on every reaction/concession turn.
 - Set recipe_name to the dish you're evaluating when setting approval.
+- NEVER write "approval=true", "approval=false", "approval:", or any variant in your text field.
+  The approval field is a separate structured output — it must NEVER appear in conversation text.
 - message_type: "reaction" when first evaluating, "concession" when backing down.
 - Every reaction should have an edge — be blunt, not diplomatic. If you approve,
   sound reluctant: "Fine. One pan. I'll allow it." Never enthusiastic on a reaction.
@@ -305,6 +332,7 @@ nutricia_agent: Agent[GroupContext, GroupMessage] = Agent(  # type: ignore
     deps_type=GroupContext,
     output_type=GroupMessage,
     retries=1,
+    model_settings=ModelSettings(temperature=NUTRICIA_TEMPERATURE),
 )
 
 
@@ -332,6 +360,8 @@ Rules:
 - You may gang up on Chef with Lazy, or defend Chef against Lazy, depending on the recipe.
 - Set approval=true or false on every reaction/concession turn.
 - Set recipe_name to the dish you're evaluating when setting approval.
+- NEVER write "approval=true", "approval=false", "approval:", or any approval notation in your
+  text field. The approval field is structured output only — keep it out of conversation text.
 - message_type: "reaction" when first evaluating, "concession" when agreeing.
 - Every reaction should be pointed and opinionated — you never soften a nutritional
   judgment. If you approve, make it conditional: "The iron content saves it."
