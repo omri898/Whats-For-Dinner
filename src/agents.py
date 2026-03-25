@@ -59,7 +59,15 @@ class _StripReasoningTransport(httpx.AsyncBaseTransport):
             body = json.loads(request.content)
             for msg in body.get("messages", []):
                 msg.pop("reasoning", None)
-                if msg.get("role") == "assistant" and msg.get("content") is None:
+                msg.pop("reasoning_content", None)
+                # Strip thinking parts pydantic-ai may embed in the content array
+                # (e.g. {"type": "thinking", "thinking": "..."} from ThinkingPart).
+                if msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
+                    msg["content"] = [
+                        p for p in msg["content"]
+                        if not (isinstance(p, dict) and p.get("type") in ("thinking", "reasoning"))
+                    ]
+                if msg.get("role") == "assistant" and msg.get("content") in (None, []):
                     msg["content"] = ""
                 # Cap large tool returns (e.g. recipe_get full-page HTML) to prevent
                 # the accumulated message history from overflowing the vLLM request limit.
@@ -196,23 +204,32 @@ someone who just got back from a farmers market. You text like an excited friend
 never formal.
 
 Research workflow (follow this EVERY proposal or pivot turn):
-1. Build a short keyword query — 1-2 main ingredient words, no full sentences.
-   Good: "chicken pasta"  Bad: "quick Italian chicken pasta under 40 minutes"
+1. Build a keyword query from:
+   - Main ingredients only — proteins (chicken, salmon, beef) and named vegetables/fruits
+     (broccoli, zucchini, tomato). Skip pantry staples: oil, onion, garlic, salt, pepper,
+     butter, flour, water.
+   - Cuisine type — append the requested cuisine (e.g. "Mediterranean").
+   - No word cap — include all main ingredients, but keep it a keyword list, not a sentence.
+   - Good: "chicken broccoli Mediterranean"  Bad: "quick chicken with olive oil and garlic"
 2. Call recipe_search(query=...) ONCE per round. The results are your full candidate
    pool for this entire round. Save them mentally — you cannot search again (except
    as noted in step 5).
 3. For each candidate: call recipe_get(id="<full URL>") to fetch full ingredients and steps.
    IMPORTANT: pass ONLY the `id` parameter — NEVER pass `source`. Passing source
    breaks the lookup. Just: recipe_get(id="https://...")
-   Check: does this recipe contain ALL required_ingredients?
+   Check: does this recipe contain ALL required_ingredients in any form?
+   "Onion" is satisfied by fresh onion, dried onion flakes, onion powder, caramelized onion, etc.
+   Match on the ingredient's identity, not its specific preparation.
    - Yes AND you like it: this is your recipe. Go to step 4.
    - No: move to the next candidate URL and repeat step 3.
+   Work through all available candidates before concluding that none match — do not
+   skip to a new search early.
 4. Do NOT output your proposal in the same turn as recipe_get.
    Wait for recipe_get to return, then craft your proposal in the NEXT LLM response.
-5. If ALL candidates fail the required-ingredient check: output a "defense" message
-   explaining that no match was found, then call recipe_search ONE MORE TIME with
-   a query that includes the required ingredient name. This is the only exception
-   to the one-search-per-round rule.
+5. If you have tried at least 5 candidate URLs via recipe_get and none contained all
+   required_ingredients: output a "defense" message, then call recipe_search ONE MORE TIME.
+   Use the same query rules as step 1 (main ingredients + cuisine, no pantry staples).
+   This is the only exception to the one-search-per-round rule.
 6. On PIVOT turns: use the cached search results shown below. Call recipe_get on a
    URL you haven't proposed yet. Do NOT call recipe_search again.
 
@@ -224,8 +241,8 @@ Rules:
 - Defense messages: MAX 2 sentences.
 - Always open by reacting to the last message — one word, a laugh, "ok BUT", "FINE."
 - Respect the cuisine preference if one was given. If cuisine is "Any cuisine", any style goes.
-- If required_ingredients are listed, your proposal MUST include all of them — verify
-  via recipe_get before proposing.
+- If required_ingredients are listed, your proposal MUST include all of them in any form
+  (fresh, dried, powdered, caramelized, frozen, pickled, etc.) — verify via recipe_get before proposing.
 - If Lazy or Nutricia contest a required ingredient, respond with a "defense" message:
   remind them it is a user hard requirement and suggest how to work around their concern.
 - If already_agreed is non-empty, your proposals MUST differ from every agreed recipe in both
