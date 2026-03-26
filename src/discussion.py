@@ -294,7 +294,6 @@ async def run_round(
             console.print(f"\n[dim bold]── DEBUG: {display_name} (turn {turn_num}) ──[/dim bold]")
             _log("Turn", f"{display_name} (turn {turn_num})")
             seen = 0
-            crashed = False
             async with agent.iter("Your turn.", deps=context) as agent_run:
                 try:
                     async for node in agent_run:
@@ -332,13 +331,10 @@ async def run_round(
                             seen = len(all_msgs)
                 except Exception as exc:
                     console.print(f"\n[bold red]Agent crashed: {exc}[/bold red]")
+                    _log("Agent crashed", str(exc))
                     for m in agent_run.all_messages()[seen:]:
                         _print_msg_parts(m, display_name, turn_num)
-                    crashed = True
-
-            if crashed:
-                console.print("[dim]── Turn aborted — falling back to best so far ──[/dim]")
-                break
+                    raise
 
             result = agent_run.result
             structured_json = result.output.model_dump_json(indent=2)

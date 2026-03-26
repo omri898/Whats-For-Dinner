@@ -11,7 +11,11 @@ from pydantic_ai.mcp import MCPServerStdio  # type: ignore
 from pydantic_ai.models.openai import OpenAIChatModel  # type: ignore
 from pydantic_ai.providers.openai import OpenAIProvider  # type: ignore
 
-from src.config import MODEL_NAME, VLLM_BASE, CHEF_TEMPERATURE, LAZY_TEMPERATURE, NUTRICIA_TEMPERATURE
+from src.config import (
+    MODEL_NAME, VLLM_BASE,
+    CHEF_TEMPERATURE, LAZY_TEMPERATURE, NUTRICIA_TEMPERATURE,
+    CHEF_MAX_TOKENS, LAZY_MAX_TOKENS, NUTRICIA_MAX_TOKENS,
+)
 from src.models import (
     GroupContext,
     GroupMessage,
@@ -179,7 +183,7 @@ chef_agent: Agent[GroupContext, GroupMessage] = Agent(  # type: ignore
     output_type=GroupMessage,
     retries=3,
     toolsets=[_mcp_filtered],
-    model_settings=ModelSettings(temperature=CHEF_TEMPERATURE),
+    model_settings=ModelSettings(temperature=CHEF_TEMPERATURE, max_tokens=CHEF_MAX_TOKENS),
 )
 
 
@@ -204,32 +208,26 @@ someone who just got back from a farmers market. You text like an excited friend
 never formal.
 
 Research workflow (follow this EVERY proposal or pivot turn):
-1. Build a keyword query from:
-   - Main ingredients only — proteins (chicken, salmon, beef) and named vegetables/fruits
-     (broccoli, zucchini, tomato). Skip pantry staples: oil, onion, garlic, salt, pepper,
-     butter, flour, water.
-   - Cuisine type — append the requested cuisine (e.g. "Mediterranean").
-   - No word cap — include all main ingredients, but keep it a keyword list, not a sentence.
-   - Good: "chicken broccoli Mediterranean"  Bad: "quick chicken with olive oil and garlic"
-2. Call recipe_search(query=...) ONCE per round. The results are your full candidate
-   pool for this entire round. Save them mentally — you cannot search again (except
-   as noted in step 5).
-3. For each candidate: call recipe_get(id="<full URL>") to fetch full ingredients and steps.
-   IMPORTANT: pass ONLY the `id` parameter — NEVER pass `source`. Passing source
-   breaks the lookup. Just: recipe_get(id="https://...")
-   Check: does this recipe contain ALL required_ingredients in any form?
+1. Build a keyword query — 2 to 4 words, keyword list only, no sentences:
+   - Include named proteins (chicken, salmon, beef) and named vegetables/fruits (broccoli, zucchini).
+   - Skip ALL pantry staples: oil, onion, garlic, salt, pepper, butter, flour, water.
+   - Append the cuisine name if one was given (e.g. "Mediterranean"). Omit if "Any cuisine".
+   - Good: "chicken broccoli Mediterranean"  Bad: "avocado"  Bad: "quick chicken with garlic"
+2. Call recipe_search(query=...) ONCE per round. After it returns, do NOT output any
+   text or analysis. Your only next action is to call recipe_get on one promising URL (step 3).
+3. Pick ONE URL from the results that looks like a single specific recipe. Skip any result
+   whose title contains words like "meal plan", "shopping list", "best X recipes", "ideas",
+   "roundup", "favorite things", or where the URL path contains /category/ or /tag/.
+   Call recipe_get(id="<full URL>") on that URL.
+   IMPORTANT: pass ONLY the `id` parameter — NEVER pass `source`.
+   After recipe_get returns, check: does this recipe contain ALL required_ingredients?
    "Onion" is satisfied by fresh onion, dried onion flakes, onion powder, caramelized onion, etc.
-   Match on the ingredient's identity, not its specific preparation.
-   - Yes AND you like it: this is your recipe. Go to step 4.
-   - No: move to the next candidate URL and repeat step 3.
-   Work through all available candidates before concluding that none match — do not
-   skip to a new search early.
+   - Yes AND you like it: go to step 4.
+   - No: pick the next promising URL and call recipe_get again (one URL per turn).
 4. Do NOT output your proposal in the same turn as recipe_get.
    Wait for recipe_get to return, then craft your proposal in the NEXT LLM response.
-5. If you have tried at least 5 candidate URLs via recipe_get and none contained all
-   required_ingredients: output a "defense" message, then call recipe_search ONE MORE TIME.
-   Use the same query rules as step 1 (main ingredients + cuisine, no pantry staples).
-   This is the only exception to the one-search-per-round rule.
+5. If you have tried at least 5 candidate URLs via recipe_get and none matched:
+   call recipe_search ONE MORE TIME with the same query rules. This is the only exception.
 6. On PIVOT turns: use the cached search results shown below. Call recipe_get on a
    URL you haven't proposed yet. Do NOT call recipe_search again.
 
@@ -253,7 +251,7 @@ Rules:
   - proposed_ingredients: full list of key ingredients
   - estimated_time: total time as a string (e.g. "35 minutes")
   - cooking_summary: 2-4 sentence summary of how to make it
-  - full_instructions: the complete step-by-step instructions from recipe_get, verbatim or close to it
+  - full_instructions: copy the step-by-step instructions directly from the recipe_get result — do NOT rewrite, summarize, or regenerate them from memory
 - Never set approval — you proposed the recipe, your approval is implicit. Leave approval=None always.
 - You are in a GROUP CHAT with Lazy and Nutricia — you are NEVER talking to the user.
   Always address Lazy, Nutricia, or both. Never say "let me know" or "you" as if speaking to a human.
@@ -285,7 +283,7 @@ lazy_agent: Agent[LazyGroupContext, GroupMessage] = Agent(  # type: ignore
     deps_type=LazyGroupContext,
     output_type=GroupMessage,
     retries=1,
-    model_settings=ModelSettings(temperature=LAZY_TEMPERATURE),
+    model_settings=ModelSettings(temperature=LAZY_TEMPERATURE, max_tokens=LAZY_MAX_TOKENS),
 )
 
 
@@ -349,7 +347,7 @@ nutricia_agent: Agent[GroupContext, GroupMessage] = Agent(  # type: ignore
     deps_type=GroupContext,
     output_type=GroupMessage,
     retries=1,
-    model_settings=ModelSettings(temperature=NUTRICIA_TEMPERATURE),
+    model_settings=ModelSettings(temperature=NUTRICIA_TEMPERATURE, max_tokens=NUTRICIA_MAX_TOKENS),
 )
 
 

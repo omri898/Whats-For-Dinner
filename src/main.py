@@ -150,12 +150,16 @@ async def _async_main(debug: bool = False) -> None:
     console.print(f"[bold]Required:[/bold] {', '.join(required) or 'none'}")
 
     # Run sequential rounds and display recommendations
-    picks = await run_all_rounds(
-        cuisine=cuisine,
-        required_ingredients=required,
-        lazy_level=lazy_level,
-        debug=debug,
-    )
+    try:
+        picks = await run_all_rounds(
+            cuisine=cuisine,
+            required_ingredients=required,
+            lazy_level=lazy_level,
+            debug=debug,
+        )
+    except Exception as exc:
+        console.print(f"\n[bold red]Fatal error — discussion aborted: {exc}[/bold red]")
+        sys.exit(1)
     display_recommendations(picks)
 
     if debug:

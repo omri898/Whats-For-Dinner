@@ -14,3 +14,9 @@ CHEF_TEMPERATURE     = 1.0
 LAZY_TEMPERATURE     = 1.0
 NUTRICIA_TEMPERATURE = 1.0
 
+# Max tokens per LLM call. Prevents runaway generation (model generating endlessly
+# after a tool return). Chef needs more headroom for full_instructions output.
+CHEF_MAX_TOKENS      = 2048
+LAZY_MAX_TOKENS      = 512
+NUTRICIA_MAX_TOKENS  = 512
+
