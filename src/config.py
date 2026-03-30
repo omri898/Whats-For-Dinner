@@ -7,13 +7,13 @@ MODEL_NAME    = "qwen3.5-27b"
 VLLM_BASE     = "http://localhost:8001/v1"
 MESSAGE_PAUSE_SECONDS = 1  # pause after each agent message (skipped in --debug mode)
 MAX_TURNS     = 12      # max turns per round before falling back to best partial pick
-MIN_TURNS     = 4       # min turns before agreement exit — ensures chef→lazy→nutricia→chef cycle
+MIN_TURNS     = 3       # min turns before agreement exit — ensures chef→lazy→nutricia→chef cycle
 TURN_ORDER    = ["chef", "lazy", "nutricia"]
 
-# Per-agent temperatures (1.0 = vLLM default). Tune here.
-CHEF_TEMPERATURE     = 1.0
-LAZY_TEMPERATURE     = 1.0
-NUTRICIA_TEMPERATURE = 1.0
+# Per-agent temperatures. Qwen3's generation_config.json recommends 0.7. Tune here.
+CHEF_TEMPERATURE     = 0.7
+LAZY_TEMPERATURE     = 0.7
+NUTRICIA_TEMPERATURE = 0.7
 
 # Max tokens per LLM call. Prevents runaway generation (model generating endlessly
 # after a tool return). Chef needs more headroom for full_instructions output.

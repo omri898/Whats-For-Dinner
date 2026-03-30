@@ -32,6 +32,7 @@ from src.models import (
     GroupMessage,
     LazyGroupContext,
     LazyLevel,
+    RecipeCard,
 )
 from src.agents import chef_agent, lazy_agent, nutricia_agent
 
@@ -115,30 +116,20 @@ def _print_message(msg: GroupMessage, turn: int, debug: bool = False) -> None:
         _log("Proposed Ingredients", str(msg.proposed_ingredients))
 
 
-def _print_recipe_card(history: list[GroupMessage], agreed_name: str) -> None:
-    """Print a full recipe card for the agreed recipe at end of round."""
-    msg = next(
-        (m for m in reversed(history)
-         if m.agent == "chef"
-         and m.message_type in ("proposal", "pivot")
-         and m.recipe_name
-         and m.recipe_name.lower() == agreed_name.lower()),
-        None,
-    )
-    if not msg:
-        return
+def _print_recipe_card(card: RecipeCard) -> None:
+    """Print a full recipe card from a RecipeCard object."""
     lines: list[str] = []
-    if msg.estimated_time:
-        lines.append(f"[bold]Time:[/bold] {msg.estimated_time}")
-    if msg.proposed_ingredients:
-        lines.append(f"[bold]Ingredients:[/bold] {', '.join(msg.proposed_ingredients)}")
-    instructions = msg.full_instructions or msg.cooking_summary
+    if card.estimated_time:
+        lines.append(f"[bold]Time:[/bold] {card.estimated_time}")
+    if card.proposed_ingredients:
+        lines.append(f"[bold]Ingredients:[/bold] {', '.join(card.proposed_ingredients)}")
+    instructions = card.full_instructions or card.cooking_summary
     if instructions:
         lines.append(f"\n[bold]Instructions:[/bold]\n{instructions}")
     if lines:
         console.print(Panel(
             "\n".join(lines),
-            title=f"[bold green]Recipe Card: {msg.recipe_name}[/bold green]",
+            title=f"[bold green]Recipe Card: {card.recipe_name}[/bold green]",
             border_style="green",
             padding=(0, 1),
         ))
@@ -224,23 +215,23 @@ def _print_msg_parts(
             _log("Raw LLM Text", part.content)
 
 
-def _round_agreement(history: list[GroupMessage]) -> str | None:
+def _round_agreement(
+    history: list[GroupMessage], current_card: RecipeCard | None
+) -> str | None:
+    """Return the agreed recipe name (from current_card) if both Lazy and Nutricia
+    most recently approved, else None.
+
+    Uses current_card as the canonical name — no recipe_name matching required on
+    Lazy/Nutricia messages, preventing hallucinated-name mismatches.
     """
-    Return the agreed recipe name if both Lazy and Nutricia most recently
-    approved the same recipe, else None. Case-insensitive comparison.
-    """
+    if current_card is None:
+        return None
     last_lazy = next((m for m in reversed(history) if m.agent == "lazy"), None)
     last_nutricia = next((m for m in reversed(history) if m.agent == "nutricia"), None)
     if not last_lazy or not last_nutricia:
         return None
-    if (
-        last_lazy.approval is True
-        and last_nutricia.approval is True
-        and last_lazy.recipe_name is not None
-        and last_nutricia.recipe_name is not None
-        and last_lazy.recipe_name.lower() == last_nutricia.recipe_name.lower()
-    ):
-        return last_lazy.recipe_name
+    if last_lazy.approval is True and last_nutricia.approval is True:
+        return current_card.recipe_name
     return None
 
 
@@ -318,7 +309,7 @@ async def run_round(
     *,
     round_num: int,
     debug: bool = False,
-) -> tuple[str | None, list[GroupMessage]]:
+) -> tuple[str | None, RecipeCard | None, list[GroupMessage]]:
     """
     Run one mini-discussion targeting a single recipe.
     Exits immediately when Lazy and Nutricia both approve the same recipe.
@@ -337,6 +328,7 @@ async def run_round(
         _log("Context at round start", ctx_json)
 
     agreed: str | None = None
+    context.current_recipe_card = None
 
     for turn_num in range(1, MAX_TURNS + 1):
         agent_name = TURN_ORDER[(turn_num - 1) % len(TURN_ORDER)]
@@ -414,6 +406,16 @@ async def run_round(
         context.history.append(msg)
         _print_message(msg, turn_num, debug=debug)
 
+        # Update canonical recipe card whenever Chef proposes or pivots
+        if msg.agent == "chef" and msg.message_type in ("proposal", "pivot") and msg.recipe_name:
+            context.current_recipe_card = RecipeCard(
+                recipe_name=msg.recipe_name,
+                proposed_ingredients=msg.proposed_ingredients or [],
+                estimated_time=msg.estimated_time,
+                cooking_summary=msg.cooking_summary,
+                full_instructions=msg.full_instructions,
+            )
+
         # Capture recipe_search query + results on Chef's first search this round
         if agent_name == "chef" and not context.search_results_this_round:
             for m in result.all_messages():
@@ -432,12 +434,13 @@ async def run_round(
 
         # Exit on agreement after MIN_TURNS (chef→lazy→nutricia→chef), checked every turn
         if turn_num >= MIN_TURNS:
-            agreed = _round_agreement(context.history)
+            agreed = _round_agreement(context.history, context.current_recipe_card)
             if agreed:
                 console.print()
                 console.print(f"[bold green]Agreement: {agreed}[/bold green]")
                 _log("Agreement", agreed)
-                _print_recipe_card(context.history, agreed)
+                if context.current_recipe_card:
+                    _print_recipe_card(context.current_recipe_card)
                 break
     else:
         console.print()
@@ -445,10 +448,11 @@ async def run_round(
         agreed = pick_best_from_round(context.history)
         if agreed:
             _log("Fallback pick", agreed)
-            _print_recipe_card(context.history, agreed)
+            if context.current_recipe_card:
+                _print_recipe_card(context.current_recipe_card)
 
     round_history = list(context.history)
-    return agreed, round_history
+    return agreed, context.current_recipe_card, round_history
 
 
 # ---------------------------------------------------------------------------
@@ -462,11 +466,11 @@ async def run_all_rounds(
     *,
     num_rounds: int = 3,
     debug: bool = False,
-) -> list[str]:
+) -> list[RecipeCard]:
     """
     Run num_rounds sequential per-recipe discussions.
     After each round, agreed recipes are passed forward so Chef avoids similar proposals.
-    Returns list of up to num_rounds recipe name strings.
+    Returns list of up to num_rounds RecipeCard objects for the agreed recipes.
     """
     available = load_ingredients()
 
@@ -486,18 +490,18 @@ async def run_all_rounds(
         lazy_level=lazy_level,
     )
 
-    picks: list[str] = []
+    picks: list[RecipeCard] = []
 
     async with chef_agent, nutricia_agent:
         for round_num in range(1, num_rounds + 1):
             context.history = []
             context.search_results_this_round = []
             context.search_query_this_round = ""
-            context.agreed_recipes = list(picks)
+            context.agreed_recipes = [c.recipe_name for c in picks]
 
-            pick, _ = await run_round(context, round_num=round_num, debug=debug)
-            if pick:
-                picks.append(pick)
+            pick_name, pick_card, _ = await run_round(context, round_num=round_num, debug=debug)
+            if pick_name and pick_card:
+                picks.append(pick_card)
 
     return picks
 
@@ -506,9 +510,11 @@ async def run_all_rounds(
 # Display
 # ---------------------------------------------------------------------------
 
-def display_recommendations(picks: list[str]) -> None:
+def display_recommendations(picks: list[RecipeCard]) -> None:
     console.rule("[bold blue]Recommendations[/bold blue]")
     console.print()
-    for i, name in enumerate(picks, 1):
-        console.print(f"  [bold]{i}. {name}[/bold]")
+    for i, card in enumerate(picks, 1):
+        console.print(f"  [bold]{i}. {card.recipe_name}[/bold]")
+        console.print()
+        _print_recipe_card(card)
     console.print()

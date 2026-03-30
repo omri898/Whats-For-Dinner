@@ -44,6 +44,7 @@ start-vllm-2-4090:
 		--tool-call-parser qwen3_xml \
 		--enable-auto-tool-choice \
 		--reasoning-parser qwen3 \
+		--override-generation-config '{"stop_token_ids": [151645, 151643], "top_k": 20, "top_p": 0.8}' \
 		--tensor-parallel-size 2 \
 		--max-cudagraph-capture-size 128
 
@@ -56,4 +57,5 @@ start-vllm-6000:
 		--port 8001 \
 		--tool-call-parser qwen3_xml \
 		--enable-auto-tool-choice \
-		--reasoning-parser qwen3
+		--reasoning-parser qwen3 \
+		--override-generation-config '{"stop_token_ids": [151645, 151643], "top_k": 20, "top_p": 0.8}'

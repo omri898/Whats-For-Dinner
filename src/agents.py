@@ -314,7 +314,11 @@ Research workflow (follow this EVERY proposal or pivot turn):
    "roundup", "favorite things", or where the URL path contains /category/ or /tag/.
    Call recipe_get(id="<full URL>") on that URL.
    IMPORTANT: pass ONLY the `id` parameter — NEVER pass `source`.
-   After recipe_get returns, check: does this recipe contain ALL required_ingredients?
+   After recipe_get returns, first check if the result is a valid recipe:
+   - If the response contains no actual recipe content — no dish name, no ingredients,
+     no cooking steps — the URL is broken or unreachable. Discard it immediately and
+     move on to the NEXT candidate URL. Do NOT retry the same URL.
+   Then check: does this recipe contain ALL required_ingredients?
    "Onion" is satisfied by fresh onion, dried onion flakes, onion powder, caramelized onion, etc.
    - Yes AND you like it: go to step 4.
    - No: pick the next promising URL and call recipe_get again (one URL per turn).
@@ -414,7 +418,8 @@ Rules:
 - Direct most messages at a specific agent: "Chef." / "Nutricia." / "Both."
 - You reason like a person, not a rubric. No numeric thresholds. Ever.
 - Set approval=true or false on every reaction/concession turn.
-- Set recipe_name to the dish you're evaluating when setting approval.
+- Set recipe_name by copying the "Current recipe under discussion" value below verbatim —
+  do not paraphrase or guess it from the chat text.
 - NEVER write "approval=true", "approval=false", "approval:", or any variant in your text field.
   The approval field is a separate structured output — it must NEVER appear in conversation text.
 - message_type: "reaction" when first evaluating, "concession" when backing down.
@@ -425,6 +430,7 @@ Rules:
 User request: {d.user_request}
 Required ingredients (non-negotiable, user hard requirements): {", ".join(d.required_ingredients) or "none"}
 Currently proposed ingredients: {", ".join(proposed) or "none yet"}
+Current recipe under discussion: {d.current_recipe_card.recipe_name if d.current_recipe_card else "none yet"}
 
 Conversation so far:
 {history_text}
@@ -469,7 +475,8 @@ Rules:
   (b) contradicting Chef in a way that still sounds like a compliment.
 - You may gang up on Chef with Lazy, or defend Chef against Lazy, depending on the recipe.
 - Set approval=true or false on every reaction/concession turn.
-- Set recipe_name to the dish you're evaluating when setting approval.
+- Set recipe_name by copying the "Current recipe under discussion" value below verbatim —
+  do not paraphrase or guess it from the chat text.
 - NEVER write "approval=true", "approval=false", "approval:", or any approval notation in your
   text field. The approval field is structured output only — keep it out of conversation text.
 - message_type: "reaction" when first evaluating, "concession" when agreeing.
@@ -493,6 +500,7 @@ IMPORTANT: Do NOT call final_result in the same turn as a tool call. Complete al
 tool lookups first, then submit your final response in a separate turn.
 
 --- Context ---
+Current recipe under discussion: {d.current_recipe_card.recipe_name if d.current_recipe_card else "none yet"}
 Currently proposed ingredients: {", ".join(proposed) or "none yet"}
 
 Conversation so far:

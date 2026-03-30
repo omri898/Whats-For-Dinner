@@ -30,6 +30,20 @@ class Cuisine(str, Enum):
 MessageType = Literal["proposal", "reaction", "pivot", "defense", "concession", "system"]
 
 
+class RecipeCard(BaseModel):
+    """Canonical recipe data set by Chef on every proposal/pivot.
+
+    Stored in GroupContext.current_recipe_card and injected verbatim into Lazy
+    and Nutricia prompts so they see the exact recipe name as a labeled field
+    (eliminating hallucination from parsing the chat text).
+    """
+    recipe_name: str
+    proposed_ingredients: list[str] = Field(default_factory=list)
+    estimated_time: str | None = None
+    cooking_summary: str | None = None
+    full_instructions: str | None = None
+
+
 class GroupMessage(BaseModel):
     agent: Literal["chef", "lazy", "nutricia", "system"]
     directed_at: Literal["chef", "lazy", "nutricia", "all"] = "all"
@@ -76,6 +90,13 @@ class GroupContext(BaseModel):
     search_query_this_round: str = Field(
         default="",
         description="The query string used in Chef's first recipe_search this round. Cleared between rounds.",
+    )
+    current_recipe_card: RecipeCard | None = Field(
+        default=None,
+        description=(
+            "Set when Chef produces a proposal/pivot. Cleared at round start. "
+            "Injected verbatim into Lazy and Nutricia prompts as the canonical recipe name."
+        ),
     )
     history: list[GroupMessage] = Field(default_factory=list)
 
