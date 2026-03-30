@@ -272,6 +272,36 @@ def pick_best_from_round(history: list[GroupMessage]) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_recipe_search_results(content: str) -> list[dict]:
+    """Parse recipe_search Markdown output into {title, url} dicts.
+
+    The MCP server returns plain Markdown text, e.g.:
+        **Veggie Teriyaki Stir-Fry**
+        by Cookie and Kate
+        Source: blogs
+        https://cookieandkate.com/...
+    """
+    results = []
+    lines = content.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("**") and line.endswith("**") and len(line) > 4:
+            title = line[2:-2].strip()
+            for j in range(i + 1, min(i + 5, len(lines))):
+                candidate = lines[j].strip()
+                if candidate.startswith("http"):
+                    results.append({"title": title, "url": candidate})
+                    i = j
+                    break
+        i += 1
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Per-recipe round
 # ---------------------------------------------------------------------------
 
@@ -371,19 +401,21 @@ async def run_round(
         context.history.append(msg)
         _print_message(msg, turn_num, debug=debug)
 
-        # Capture recipe_search results on Chef's first search this round
+        # Capture recipe_search query + results on Chef's first search this round
         if agent_name == "chef" and not context.search_results_this_round:
             for m in result.all_messages():
                 if not hasattr(m, "parts"):
                     continue
                 for part in m.parts:
-                    if isinstance(part, ToolReturnPart) and part.tool_name == "recipe_search":
+                    if isinstance(part, ToolCallPart) and part.tool_name == "recipe_search":
                         try:
-                            hits = json.loads(part.content)
-                            if isinstance(hits, list):
-                                context.search_results_this_round = hits
+                            context.search_query_this_round = json.loads(part.args_as_json_str()).get("query", "")
                         except Exception:
                             pass
+                    if isinstance(part, ToolReturnPart) and part.tool_name == "recipe_search":
+                        hits = _parse_recipe_search_results(str(part.content))
+                        if hits:
+                            context.search_results_this_round = hits
 
         # Exit on agreement after MIN_TURNS (chef→lazy→nutricia→chef), checked every turn
         if turn_num >= MIN_TURNS:
@@ -447,6 +479,7 @@ async def run_all_rounds(
         for round_num in range(1, num_rounds + 1):
             context.history = []
             context.search_results_this_round = []
+            context.search_query_this_round = ""
             context.agreed_recipes = list(picks)
 
             pick, _ = await run_round(context, round_num=round_num, debug=debug)

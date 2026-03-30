@@ -73,6 +73,10 @@ class GroupContext(BaseModel):
         default_factory=list,
         description="recipe_search hits from Chef's first search this round. Cleared between rounds. Injected into Chef's prompt for pivot turns.",
     )
+    search_query_this_round: str = Field(
+        default="",
+        description="The query string used in Chef's first recipe_search this round. Cleared between rounds.",
+    )
     history: list[GroupMessage] = Field(default_factory=list)
 
 
