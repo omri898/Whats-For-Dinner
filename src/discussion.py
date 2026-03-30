@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import datetime
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import IO
 
@@ -56,7 +58,8 @@ def close_log() -> None:
 
 def _log(label: str, content: str) -> None:
     if _log_file is not None:
-        _log_file.write(f"\n=== {label} ===\n{content}\n")
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        _log_file.write(f"\n=== [{ts}] {label} ===\n{content}\n")
         _log_file.flush()
 
 
@@ -147,28 +150,31 @@ def _print_msg_parts(
     turn_num: int,
     *,
     skip_thinking_and_text: bool = False,
+    log_only: bool = False,
 ) -> None:
     """Print all debug-relevant parts of a single ModelMessage as they stream in."""
     if not hasattr(m, "parts"):
         return
     for part in m.parts:  # type: ignore[attr-defined]
         if isinstance(part, SystemPromptPart):
-            console.print(Panel(
-                part.content,
-                title="[bold cyan]System Prompt[/bold cyan]",
-                border_style="cyan",
-            ))
+            if not log_only:
+                console.print(Panel(
+                    part.content,
+                    title="[bold cyan]System Prompt[/bold cyan]",
+                    border_style="cyan",
+                ))
             _log("System Prompt", part.content)
         elif isinstance(part, UserPromptPart):
             content = part.content if isinstance(part.content, str) else json.dumps(part.content, indent=2)
-            console.print(Panel(
-                content,
-                title="[bold blue]User Prompt[/bold blue]",
-                border_style="blue",
-            ))
+            if not log_only:
+                console.print(Panel(
+                    content,
+                    title="[bold blue]User Prompt[/bold blue]",
+                    border_style="blue",
+                ))
             _log("User Prompt", content)
         elif isinstance(part, ThinkingPart):
-            if not skip_thinking_and_text:
+            if not skip_thinking_and_text and not log_only:
                 console.print(Panel(
                     part.content,
                     title="[bold magenta]Thinking / Reasoning[/bold magenta]",
@@ -177,11 +183,12 @@ def _print_msg_parts(
             _log("Thinking", part.content)
         elif isinstance(part, ToolCallPart):
             args_str = part.args if isinstance(part.args, str) else json.dumps(part.args, indent=2)
-            console.print(Panel(
-                f"tool: {part.tool_name}\nargs: {args_str}",
-                title="[bold yellow]Tool Call[/bold yellow]",
-                border_style="yellow",
-            ))
+            if not log_only:
+                console.print(Panel(
+                    f"tool: {part.tool_name}\nargs: {args_str}",
+                    title="[bold yellow]Tool Call[/bold yellow]",
+                    border_style="yellow",
+                ))
             _log("Tool Call", f"tool: {part.tool_name}\nargs: {args_str}")
         elif isinstance(part, ToolReturnPart):
             content_str = str(part.content)
@@ -200,14 +207,15 @@ def _print_msg_parts(
                 display_str = content_str
                 label = f"[bold yellow]Tool Return · {part.tool_name}[/bold yellow]"
                 log_label = f"Tool Return: {part.tool_name}"
-            console.print(Panel(
-                display_str,
-                title=label,
-                border_style="yellow",
-            ))
+            if not log_only:
+                console.print(Panel(
+                    display_str,
+                    title=label,
+                    border_style="yellow",
+                ))
             _log(log_label, display_str)
         elif isinstance(part, TextPart) and part.content.strip():
-            if not skip_thinking_and_text:
+            if not skip_thinking_and_text and not log_only:
                 console.print(Panel(
                     part.content,
                     title="[bold white]Raw LLM Text[/bold white]",
@@ -377,7 +385,7 @@ async def run_round(
                             seen = len(all_msgs)
                 except Exception as exc:
                     console.print(f"\n[bold red]Agent crashed: {exc}[/bold red]")
-                    _log("Agent crashed", str(exc))
+                    _log("Agent crashed", f"{exc}\n\n{traceback.format_exc()}")
                     for m in agent_run.all_messages()[seen:]:
                         _print_msg_parts(m, display_name, turn_num)
                     raise
@@ -396,6 +404,11 @@ async def run_round(
             with console.status(f"[dim]{display_name} is thinking...[/dim]"):
                 result = await agent.run("Your turn.", deps=context)
                 time.sleep(MESSAGE_PAUSE_SECONDS)
+            # Log full turn details post-hoc (same content as debug path, no console output)
+            _log("Turn", f"{display_name} (turn {turn_num})")
+            for m in result.all_messages():
+                _print_msg_parts(m, display_name, turn_num, skip_thinking_and_text=True, log_only=True)
+            _log("Structured Output (GroupMessage)", result.output.model_dump_json(indent=2))
 
         msg = result.output
         context.history.append(msg)
