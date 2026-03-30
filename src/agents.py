@@ -151,6 +151,24 @@ class _StripReasoningTransport(httpx.AsyncBaseTransport):
                     ]
                 if msg.get("role") == "assistant" and msg.get("content") in (None, []):
                     msg["content"] = ""
+                # Sanitise tool_calls[].function.arguments in assistant messages.
+                # Qwen3's extended thinking can exhaust the token budget mid-generation,
+                # leaving arguments as truncated JSON (e.g. "[\n\n\n..." instead of "{}").
+                # vLLM accepts malformed arguments in its own output but rejects them
+                # when they appear as history in a subsequent request (400 "EOF while
+                # parsing a list"). Replace any non-dict arguments with "{}".
+                if msg.get("role") == "assistant":
+                    for tc in msg.get("tool_calls") or []:
+                        fn = tc.get("function") if isinstance(tc, dict) else None
+                        if not isinstance(fn, dict):
+                            continue
+                        args = fn.get("arguments", "{}")
+                        try:
+                            parsed = json.loads(args)
+                            if not isinstance(parsed, dict):
+                                fn["arguments"] = "{}"
+                        except (json.JSONDecodeError, ValueError):
+                            fn["arguments"] = "{}"
                 # Cap large tool returns (e.g. recipe_get full-page HTML) to prevent
                 # the accumulated message history from overflowing the vLLM request limit.
                 # Uses JSON-aware truncation so vLLM's qwen3_xml parser never sees
