@@ -290,7 +290,11 @@ def chef_system_prompt(ctx: RunContext[GroupContext]) -> str:  # type: ignore
             f"  - {r.get('title', r.get('name', '?'))} → {r.get('url', r.get('id', r.get('href', '?')))}"
             for r in d.search_results_this_round
         )
-        search_cache_text = f"\nSearch results from this round (use these for pivots — do NOT call recipe_search again):\n{lines}"
+        query_hint = f'recipe_search("{d.search_query_this_round}")' if d.search_query_this_round else "recipe_search"
+        search_cache_text = (
+            f"\nYou already called {query_hint} earlier this round. "
+            f"Do NOT call recipe_search again — use the results below to pick your next recipe_get candidate:\n{lines}"
+        )
 
     return f"""\
 You are Chef Enthusiastico. You propose and defend recipes with the energy of
