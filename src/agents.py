@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 import json
-import httpx
-from rich import print as rprint
-from rich.table import Table
 
+import httpx
 from pydantic_ai import Agent, RunContext  # type: ignore
-from pydantic_ai.settings import ModelSettings  # type: ignore
 from pydantic_ai.mcp import MCPServerStdio  # type: ignore
 from pydantic_ai.models.openai import OpenAIChatModel  # type: ignore
 from pydantic_ai.providers.openai import OpenAIProvider  # type: ignore
+from pydantic_ai.settings import ModelSettings  # type: ignore
+from rich import print as rprint
+from rich.table import Table
 
 from src.config import (
-    MODEL_NAME, VLLM_BASE,
-    CHEF_TEMPERATURE, LAZY_TEMPERATURE, NUTRICIA_TEMPERATURE,
-    CHEF_MAX_TOKENS, LAZY_MAX_TOKENS, NUTRICIA_MAX_TOKENS,
+    CHEF_MAX_TOKENS,
+    CHEF_TEMPERATURE,
+    LAZY_MAX_TOKENS,
+    LAZY_TEMPERATURE,
+    MODEL_NAME,
+    NUTRICIA_MAX_TOKENS,
+    NUTRICIA_TEMPERATURE,
+    NUTRITION_MCP_PATH,
+    VLLM_BASE,
 )
 from src.models import (
     GroupContext,
@@ -30,6 +36,76 @@ from src.models import (
 #   - "default" keys in property defs  (not in OpenAI's JSON Schema subset)
 # MCP tool schemas may contain either. Walk and normalise in-place.
 # ---------------------------------------------------------------------------
+
+_NUTRITION_KEEP = {"name", "nutrition_100g"}
+
+
+def _slim_nutrition_response(content: str) -> str:
+    """Strip all fields except name and nutrition_100g from nutrition MCP responses.
+
+    Detected by presence of 'nutrition_100g' key — the chef's recipe MCP never
+    returns this field, so there's no false-positive risk.
+    """
+    try:
+        data = json.loads(content)
+        # search-food-by-name: {"foods": [{nutrition_100g: ...}, ...]}
+        if isinstance(data, dict) and "foods" in data and isinstance(data["foods"], list):
+            return json.dumps(
+                [{k: item[k] for k in _NUTRITION_KEEP if k in item} for item in data["foods"]],
+                separators=(",", ":"),
+            )
+
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return content
+
+
+def _truncate_tool_content(content: str, max_chars: int = 3000) -> str:
+    """Truncate tool return content to max_chars, preserving JSON validity when possible.
+
+    vLLM's qwen3_xml parser validates tool content as JSON when it looks like JSON.
+    Raw string truncation produces invalid JSON (EOF mid-array/object), causing 400 errors.
+    Strategy: compact-serialise first (removes whitespace), then trim list items or dict keys.
+    """
+    if len(content) <= max_chars:
+        return content
+    try:
+        data = json.loads(content)
+        # Compact serialisation often shrinks heavily-indented responses dramatically
+        compact = json.dumps(data, separators=(",", ":"))
+        if len(compact) <= max_chars:
+            return compact
+        if isinstance(data, list):
+            # Binary-search for the most items that fit within the limit
+            lo, hi = 0, len(data)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if len(json.dumps(data[:mid], separators=(",", ":"))) <= max_chars - 50:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            result = data[:lo]
+            note = f"...{len(data) - lo} more items truncated"
+            with_note = json.dumps(result + [note], separators=(",", ":"))
+            return (
+                with_note
+                if len(with_note) <= max_chars
+                else json.dumps(result, separators=(",", ":"))
+            )
+        elif isinstance(data, dict):
+            trimmed: dict = {}
+            for k, v in data.items():
+                candidate = json.dumps({**trimmed, k: v}, separators=(",", ":"))
+                if len(candidate) > max_chars - 50:
+                    trimmed["__truncated__"] = "...more fields omitted"
+                    break
+                trimmed[k] = v
+            return json.dumps(trimmed, separators=(",", ":"))
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Non-JSON content: raw truncation is fine
+    return content[:max_chars] + "\n[...truncated for length...]"
+
 
 def _sanitize_schema(schema: dict) -> dict:
     if "anyOf" in schema:
@@ -54,6 +130,7 @@ def _sanitize_schema(schema: dict) -> dict:
 # keeps --reasoning-parser qwen3 intact for debug ThinkingPart tokens.
 # ---------------------------------------------------------------------------
 
+
 class _StripReasoningTransport(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self._inner = httpx.AsyncHTTPTransport()
@@ -68,24 +145,27 @@ class _StripReasoningTransport(httpx.AsyncBaseTransport):
                 # (e.g. {"type": "thinking", "thinking": "..."} from ThinkingPart).
                 if msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
                     msg["content"] = [
-                        p for p in msg["content"]
+                        p
+                        for p in msg["content"]
                         if not (isinstance(p, dict) and p.get("type") in ("thinking", "reasoning"))
                     ]
                 if msg.get("role") == "assistant" and msg.get("content") in (None, []):
                     msg["content"] = ""
                 # Cap large tool returns (e.g. recipe_get full-page HTML) to prevent
                 # the accumulated message history from overflowing the vLLM request limit.
+                # Uses JSON-aware truncation so vLLM's qwen3_xml parser never sees
+                # truncated-mid-stream JSON (which causes 400 "EOF while parsing" errors).
                 if msg.get("role") == "tool":
                     content = msg.get("content")
-                    if isinstance(content, str) and len(content) > 3000:
-                        msg["content"] = content[:3000] + "\n[...truncated for length...]"
+                    if isinstance(content, str):
+                        msg["content"] = _truncate_tool_content(_slim_nutrition_response(content))
                     elif isinstance(content, list):
                         # Content-array format: truncate each text part
                         for part in content:
                             if isinstance(part, dict) and part.get("type") == "text":
-                                text = part.get("text", "")
-                                if len(text) > 3000:
-                                    part["text"] = text[:3000] + "\n[...truncated for length...]"
+                                part["text"] = _truncate_tool_content(
+                                    _slim_nutrition_response(part.get("text", ""))
+                                )
             for tool in body.get("tools", []):
                 params = tool.get("function", {}).get("parameters")
                 if isinstance(params, dict):
@@ -102,6 +182,7 @@ class _StripReasoningTransport(httpx.AsyncBaseTransport):
             )
         except Exception as exc:
             import sys
+
             print(f"[_StripReasoningTransport] JSON rewrite failed: {exc}", file=sys.stderr)
         return await self._inner.handle_async_request(request)
 
@@ -112,6 +193,7 @@ class _StripReasoningTransport(httpx.AsyncBaseTransport):
 # ---------------------------------------------------------------------------
 # Model factory
 # ---------------------------------------------------------------------------
+
 
 def make_model(temperature: float = 1.0) -> OpenAIChatModel:
     http_client = httpx.AsyncClient(transport=_StripReasoningTransport())
@@ -133,10 +215,15 @@ _CHEF_TOOLS = {"recipe_search", "recipe_get"}
 _mcp = MCPServerStdio("recipe-mcp-server", [])
 _mcp_filtered = _mcp.filtered(lambda _ctx, tool: tool.name in _CHEF_TOOLS)
 
+_NUTRICIA_TOOLS = {"search-food-by-name"}
+_nutrition_mcp = MCPServerStdio("node", [NUTRITION_MCP_PATH])
+_nutrition_mcp_filtered = _nutrition_mcp.filtered(lambda _ctx, tool: tool.name in _NUTRICIA_TOOLS)
+
 
 # ---------------------------------------------------------------------------
 # vLLM health check
 # ---------------------------------------------------------------------------
+
 
 async def check_vllm() -> None:
     """Hit /v1/models and pretty-print. Raises ConnectionError on failure."""
@@ -165,6 +252,7 @@ async def check_vllm() -> None:
 # Helper: extract latest proposed ingredients from history
 # ---------------------------------------------------------------------------
 
+
 def _latest_proposed(history: list[GroupMessage]) -> list[str]:
     """Return proposed_ingredients from the most recent proposal/pivot/lock, or []."""
     for msg in reversed(history):
@@ -190,9 +278,11 @@ chef_agent: Agent[GroupContext, GroupMessage] = Agent(  # type: ignore
 @chef_agent.system_prompt
 def chef_system_prompt(ctx: RunContext[GroupContext]) -> str:  # type: ignore
     d = ctx.deps
-    history_text = "\n".join(
-        f"[{m.agent}] {m.text}" for m in d.history
-    ) if d.history else "(no messages yet — you go first)"
+    history_text = (
+        "\n".join(f"[{m.agent}] {m.text}" for m in d.history)
+        if d.history
+        else "(no messages yet — you go first)"
+    )
 
     search_cache_text = ""
     if d.search_results_this_round:
@@ -264,9 +354,9 @@ Rules:
 --- Context ---
 User request: {d.user_request}
 Cuisine: {d.cuisine.value}
-Required ingredients (MUST be in every proposal, non-negotiable): {', '.join(d.required_ingredients) or 'none'}
-Available pantry: {', '.join(d.available_ingredients) or 'none'}
-Already agreed recipes (DO NOT repeat; propose recipes that differ in both dish type and primary protein): {', '.join(d.agreed_recipes) or 'none yet'}
+Required ingredients (MUST be in every proposal, non-negotiable): {", ".join(d.required_ingredients) or "none"}
+Available pantry: {", ".join(d.available_ingredients) or "none"}
+Already agreed recipes (DO NOT repeat; propose recipes that differ in both dish type and primary protein): {", ".join(d.agreed_recipes) or "none yet"}
 {search_cache_text}
 Conversation so far:
 {history_text}
@@ -291,9 +381,9 @@ lazy_agent: Agent[LazyGroupContext, GroupMessage] = Agent(  # type: ignore
 def lazy_system_prompt(ctx: RunContext[LazyGroupContext]) -> str:  # type: ignore
     d = ctx.deps
     proposed = _latest_proposed(d.history)
-    history_text = "\n".join(
-        f"[{m.agent}] {m.text}" for m in d.history
-    ) if d.history else "(no messages yet)"
+    history_text = (
+        "\n".join(f"[{m.agent}] {m.text}" for m in d.history) if d.history else "(no messages yet)"
+    )
 
     return f"""\
 You are The Lazy Advisor. You evaluate recipes based on the user's current energy level.
@@ -329,8 +419,8 @@ Rules:
 
 --- Context ---
 User request: {d.user_request}
-Required ingredients (non-negotiable, user hard requirements): {', '.join(d.required_ingredients) or 'none'}
-Currently proposed ingredients: {', '.join(proposed) or 'none yet'}
+Required ingredients (non-negotiable, user hard requirements): {", ".join(d.required_ingredients) or "none"}
+Currently proposed ingredients: {", ".join(proposed) or "none yet"}
 
 Conversation so far:
 {history_text}
@@ -346,7 +436,8 @@ nutricia_agent: Agent[GroupContext, GroupMessage] = Agent(  # type: ignore
     make_model(),
     deps_type=GroupContext,
     output_type=GroupMessage,
-    retries=1,
+    retries=2,
+    toolsets=[_nutrition_mcp_filtered],
     model_settings=ModelSettings(temperature=NUTRICIA_TEMPERATURE, max_tokens=NUTRICIA_MAX_TOKENS),
 )
 
@@ -355,9 +446,9 @@ nutricia_agent: Agent[GroupContext, GroupMessage] = Agent(  # type: ignore
 def nutricia_system_prompt(ctx: RunContext[GroupContext]) -> str:  # type: ignore
     d = ctx.deps
     proposed = _latest_proposed(d.history)
-    history_text = "\n".join(
-        f"[{m.agent}] {m.text}" for m in d.history
-    ) if d.history else "(no messages yet)"
+    history_text = (
+        "\n".join(f"[{m.agent}] {m.text}" for m in d.history) if d.history else "(no messages yet)"
+    )
 
     return f"""\
 You are Dr. Nutricia. You evaluate recipes for nutritional value with the energy
@@ -381,12 +472,26 @@ Rules:
 - Every reaction should be pointed and opinionated — you never soften a nutritional
   judgment. If you approve, make it conditional: "The iron content saves it."
 
+--- Nutrition lookup (reaction turns only) ---
+You have access to one tool: search-food-by-name.
+On REACTION turns (evaluating a new recipe proposal):
+1. Pick 2-3 nutritionally interesting ingredients from the proposed list
+   (the protein, a vegetable, or any standout item — skip pantry staples like oil and salt).
+2. For each: call search-food-by-name(query="<ingredient>", pageSize=1).
+   The response already contains the full nutritional profile — use it directly.
+3. Evaluate the ENTIRE recipe holistically. One less-healthy ingredient (a sauce, a
+   condiment, a sweetener) does NOT disqualify a nutritionally sound dish — look at the
+   complete picture.
+4. Cite specific real values from the data in your text: "27g protein per 100g", "high in vitamin K".
+
+On CONCESSION turns (when you are agreeing to a recipe): do NOT call any tools.
+IMPORTANT: Do NOT call final_result in the same turn as a tool call. Complete all
+tool lookups first, then submit your final response in a separate turn.
+
 --- Context ---
-Currently proposed ingredients: {', '.join(proposed) or 'none yet'}
+Currently proposed ingredients: {", ".join(proposed) or "none yet"}
 
 Conversation so far:
 {history_text}
 
 Remember: you are agent="nutricia". Set your fields accordingly."""
-
-

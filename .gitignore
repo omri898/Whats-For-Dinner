@@ -52,5 +52,7 @@ CLAUDE.md
 feature-ideas.md
 notes.md
 notebook.ipynb
-test_vllm.py
 logs/
+mcp-opennutrition/
+skills/
+rules/

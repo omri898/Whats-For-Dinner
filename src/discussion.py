@@ -23,7 +23,8 @@ from pydantic_ai.messages import (  # type: ignore
     ThinkingPartDelta,
 )
 
-from src.config import MAX_TURNS, MESSAGE_PAUSE_SECONDS, MIN_TURNS, TURN_ORDER
+from src.config import MAX_TURNS, MESSAGE_PAUSE_SECONDS, MIN_TURNS, TURN_ORDER, DEBUG_TOOL_RETURN_RAW
+from src.agents import _slim_nutrition_response, _NUTRICIA_TOOLS
 from src.models import (
     Cuisine,
     GroupMessage,
@@ -184,12 +185,27 @@ def _print_msg_parts(
             _log("Tool Call", f"tool: {part.tool_name}\nargs: {args_str}")
         elif isinstance(part, ToolReturnPart):
             content_str = str(part.content)
+            is_nutrition = part.tool_name in _NUTRICIA_TOOLS
+            if is_nutrition and not DEBUG_TOOL_RETURN_RAW:
+                # part.content is a Python object — serialize to JSON so
+                # _slim_nutrition_response can parse and strip fields.
+                try:
+                    json_str = json.dumps(part.content)
+                except (TypeError, ValueError):
+                    json_str = content_str
+                display_str = _slim_nutrition_response(json_str)
+                label = f"[bold yellow]Tool Return (slimmed) · {part.tool_name}[/bold yellow]"
+                log_label = f"Tool Return (slimmed): {part.tool_name}"
+            else:
+                display_str = content_str
+                label = f"[bold yellow]Tool Return · {part.tool_name}[/bold yellow]"
+                log_label = f"Tool Return: {part.tool_name}"
             console.print(Panel(
-                content_str,
-                title=f"[bold yellow]Tool Return · {part.tool_name}[/bold yellow]",
+                display_str,
+                title=label,
                 border_style="yellow",
             ))
-            _log(f"Tool Return: {part.tool_name}", content_str)
+            _log(log_label, display_str)
         elif isinstance(part, TextPart) and part.content.strip():
             if not skip_thinking_and_text:
                 console.print(Panel(
@@ -427,7 +443,7 @@ async def run_all_rounds(
 
     picks: list[str] = []
 
-    async with chef_agent:
+    async with chef_agent, nutricia_agent:
         for round_num in range(1, num_rounds + 1):
             context.history = []
             context.search_results_this_round = []

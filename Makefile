@@ -24,7 +24,16 @@ check-mcp:
 		&& echo "recipe-mcp-server found: $$(which recipe-mcp-server)" \
 		|| (echo "recipe-mcp-server not found. Install with: npm install -g recipe-mcp-server" && exit 1)
 
-start-vllm-2gpu:
+check-nutrition-mcp:
+	conda run --no-capture-output -n dinner env PYTHONPATH=. python -c "\
+import os, sys; \
+from src.config import NUTRITION_MCP_PATH; \
+p = NUTRITION_MCP_PATH; \
+sys.exit(print('ERROR: NUTRITION_MCP_PATH is not set in .env') or 1) if not p else \
+sys.exit(print(f'ERROR: File not found: {p}') or 1) if not os.path.isfile(p) else \
+print(f'mcp-opennutrition found: {p}')"
+
+start-vllm-2-4090:
 	rm -rf ~/.cache/vllm/torch_compile_cache
 	conda run --no-capture-output -n dinner python -m vllm.entrypoints.openai.api_server \
 		--model Qwen/Qwen3.5-27B-GPTQ-Int4 \
@@ -38,13 +47,12 @@ start-vllm-2gpu:
 		--tensor-parallel-size 2 \
 		--max-cudagraph-capture-size 128
 
-start-vllm:
+start-vllm-6000:
 	rm -rf ~/.cache/vllm/torch_compile_cache
 	conda run --no-capture-output -n dinner python -m vllm.entrypoints.openai.api_server \
 		--model Qwen/Qwen3.5-27B-GPTQ-Int4 \
 		--served-model-name qwen3.5-27b \
 		--quantization gptq_marlin \
-		--max-model-len 32768 \
 		--port 8001 \
 		--tool-call-parser qwen3_xml \
 		--enable-auto-tool-choice \
