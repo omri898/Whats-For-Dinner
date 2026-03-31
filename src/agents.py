@@ -274,8 +274,8 @@ async def check_vllm() -> None:
 def _latest_proposed(history: list[GroupMessage]) -> list[str]:
     """Return proposed_ingredients from the most recent proposal/pivot/lock, or []."""
     for msg in reversed(history):
-        if msg.message_type in ("proposal", "pivot") and msg.proposed_ingredients:
-            return msg.proposed_ingredients
+        if msg.message_type in ("proposal", "pivot") and msg.recipe_card and msg.recipe_card.proposed_ingredients:
+            return msg.recipe_card.proposed_ingredients
     return []
 
 
@@ -362,7 +362,7 @@ Rules:
 - If already_agreed is non-empty, your proposals MUST differ from every agreed recipe in both
   dish type (e.g. salad vs stew vs stir-fry) AND primary protein. Ingredient tweaks alone
   do not count as a different recipe.
-- Every proposal/pivot MUST set ALL of these structured fields from the recipe_get result:
+- Every proposal/pivot MUST set the recipe_card field with ALL sub-fields from the recipe_get result:
   - recipe_name: the dish name
   - proposed_ingredients: full list of key ingredients
   - estimated_time: total time as a string (e.g. "35 minutes")
@@ -436,10 +436,9 @@ Rules:
 - Direct most messages at a specific agent: "Chef." / "Nutricia." / "Both."
 - You reason like a person, not a rubric. No numeric thresholds. Ever.
 - Set approval=true or false on every reaction/concession turn.
-- Set recipe_name by copying the "Current recipe under discussion" value below verbatim —
-  do not paraphrase or guess it from the chat text.
 - NEVER write "approval=true", "approval=false", "approval:", or any variant in your text field.
   The approval field is a separate structured output — it must NEVER appear in conversation text.
+- Do NOT set recipe_card — only Chef sets that.
 - message_type: "reaction" when first evaluating, "concession" when backing down.
 - Every reaction should have an edge — be blunt, not diplomatic. If you approve,
   sound reluctant: "Fine. One pan. I'll allow it." Never enthusiastic on a reaction.
@@ -493,10 +492,9 @@ Rules:
   (b) contradicting Chef in a way that still sounds like a compliment.
 - You may gang up on Chef with Lazy, or defend Chef against Lazy, depending on the recipe.
 - Set approval=true or false on every reaction/concession turn.
-- Set recipe_name by copying the "Current recipe under discussion" value below verbatim —
-  do not paraphrase or guess it from the chat text.
 - NEVER write "approval=true", "approval=false", "approval:", or any approval notation in your
   text field. The approval field is structured output only — keep it out of conversation text.
+- Do NOT set recipe_card — only Chef sets that.
 - message_type: "reaction" when first evaluating, "concession" when agreeing.
 - Every reaction should be pointed and opinionated — you never soften a nutritional
   judgment. If you approve, make it conditional: "The iron content saves it."

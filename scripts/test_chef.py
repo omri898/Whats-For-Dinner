@@ -91,7 +91,7 @@ async def main() -> None:
         msg.text,
         title="[bold red]Chef Enthusiastico[/bold red]",
         subtitle=f"[dim]{msg.message_type} · → {msg.directed_at}"
-                 f"{' · ' + msg.recipe_name if msg.recipe_name else ''}[/dim]",
+                 f"{' · ' + msg.recipe_card.recipe_name if msg.recipe_card else ''}[/dim]",
         border_style="red",
     ))
     rprint("\n[dim]Raw GroupMessage:[/dim]")

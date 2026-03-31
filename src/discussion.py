@@ -98,9 +98,10 @@ def _print_message(msg: GroupMessage, turn: int, debug: bool = False) -> None:
     approval_label = ""
     if msg.agent in ("lazy", "nutricia") and msg.approval is not None:
         approval_label = " · " + ("Approved" if msg.approval else "Declined")
+    recipe_label = msg.recipe_card.recipe_name if msg.recipe_card else ""
     subtitle = (
         f"Turn {turn} · {msg.message_type} · → {msg.directed_at}"
-        f"{' · ' + msg.recipe_name if msg.recipe_name else ''}"
+        f"{' · ' + recipe_label if recipe_label else ''}"
         f"{approval_label}"
     )
     console.print(Panel(
@@ -111,9 +112,9 @@ def _print_message(msg: GroupMessage, turn: int, debug: bool = False) -> None:
     ))
     _log(f"{name} | {subtitle}", msg.text)
 
-    if debug and msg.proposed_ingredients:
-        console.print(f"  [dim]proposed_ingredients: {msg.proposed_ingredients}[/dim]")
-        _log("Proposed Ingredients", str(msg.proposed_ingredients))
+    if debug and msg.recipe_card and msg.recipe_card.proposed_ingredients:
+        console.print(f"  [dim]proposed_ingredients: {msg.recipe_card.proposed_ingredients}[/dim]")
+        _log("Proposed Ingredients", str(msg.recipe_card.proposed_ingredients))
 
 
 def _print_recipe_card(card: RecipeCard) -> None:
@@ -252,26 +253,28 @@ def pick_best_from_round(history: list[GroupMessage]) -> str | None:
     """
     Fallback: return the recipe from this round's history with the most approvals.
     Full consensus (both approved) beats partial (one approved).
+    Tracks the current recipe from Chef proposals and attributes reactor
+    approvals to it (rather than relying on reactor-set recipe names).
     Returns None if no recipes were proposed.
     """
     order: list[str] = []
     approvals: dict[str, dict[str, bool]] = {}
     name_map: dict[str, str] = {}
+    current_key: str | None = None
 
     for msg in history:
-        if msg.recipe_name and msg.message_type in ("proposal", "pivot"):
-            key = msg.recipe_name.lower()
-            if key not in approvals:
-                order.append(key)
-                approvals[key] = {}
-            name_map.setdefault(key, msg.recipe_name)
-        if msg.agent in ("lazy", "nutricia") and msg.approval is not None and msg.recipe_name:
-            key = msg.recipe_name.lower()
-            if key not in approvals:
-                order.append(key)
-                approvals[key] = {}
-            approvals[key][msg.agent] = msg.approval
-            name_map.setdefault(key, msg.recipe_name)
+        if msg.recipe_card and msg.message_type in ("proposal", "pivot"):
+            current_key = msg.recipe_card.recipe_name.lower()
+            if current_key not in approvals:
+                order.append(current_key)
+                approvals[current_key] = {}
+            name_map.setdefault(current_key, msg.recipe_card.recipe_name)
+        if msg.agent in ("lazy", "nutricia") and msg.approval is not None and current_key:
+            if current_key not in approvals:
+                order.append(current_key)
+                approvals[current_key] = {}
+            approvals[current_key][msg.agent] = msg.approval
+            name_map.setdefault(current_key, current_key)
 
     if not order:
         return None
@@ -334,11 +337,12 @@ async def run_round(
     console.print()
     _log("Round", str(round_num))
 
+    # Always log full context at round start for crash diagnosis
+    ctx_json = context.model_dump_json(indent=2)
+    _log("Context at round start", ctx_json)
     if debug:
-        ctx_json = context.model_dump_json(indent=2)
         console.print("[dim]Context at round start:[/dim]")
         console.print(f"[dim]{ctx_json}[/dim]")
-        _log("Context at round start", ctx_json)
 
     agreed: str | None = None
     context.current_recipe_card = None
@@ -347,6 +351,14 @@ async def run_round(
         agent_name = TURN_ORDER[(turn_num - 1) % len(TURN_ORDER)]
         agent = AGENT_MAP[agent_name]
         display_name = AGENT_DISPLAY[agent_name][0]
+
+        # Always log pre-call context (even in non-debug mode) for crash diagnosis
+        _log("Turn start", (
+            f"{display_name} (turn {turn_num}) | "
+            f"history={len(context.history)} msgs | "
+            f"recipe_card={context.current_recipe_card.recipe_name if context.current_recipe_card else 'none'} | "
+            f"search_cache={len(context.search_results_this_round)} hits"
+        ))
 
         if debug:
             # Stream via iter() so debug output appears even if the run crashes.
@@ -393,6 +405,7 @@ async def run_round(
                     _log("Agent crashed", f"{exc}\n\n{traceback.format_exc()}")
                     for m in agent_run.all_messages()[seen:]:
                         _print_msg_parts(m, display_name, turn_num)
+                    _log("Context at crash", context.model_dump_json(indent=2))
                     raise
 
             result = agent_run.result
@@ -406,11 +419,22 @@ async def run_round(
             console.print("[dim]── Press Enter for next agent ──[/dim]", end=" ")
             input()
         else:
-            with console.status(f"[dim]{display_name} is thinking...[/dim]"):
-                result = await agent.run("Your turn.", deps=context)
-                time.sleep(MESSAGE_PAUSE_SECONDS)
+            # Use iter() instead of run() so we can capture partial messages on crash
+            async with agent.iter("Your turn.", deps=context) as agent_run:
+                try:
+                    with console.status(f"[dim]{display_name} is thinking...[/dim]"):
+                        async for _node in agent_run:
+                            pass
+                        time.sleep(MESSAGE_PAUSE_SECONDS)
+                except Exception as exc:
+                    # Log everything the model produced before the crash
+                    _log("Agent crashed", f"{display_name} (turn {turn_num})\n{exc}")
+                    for m in agent_run.all_messages():
+                        _print_msg_parts(m, display_name, turn_num, log_only=True)
+                    _log("Context at crash", context.model_dump_json(indent=2))
+                    raise
+            result = agent_run.result
             # Log full turn details post-hoc (same content as debug path, no console output)
-            _log("Turn", f"{display_name} (turn {turn_num})")
             for m in result.all_messages():
                 _print_msg_parts(m, display_name, turn_num, skip_thinking_and_text=True, log_only=True)
             _log("Structured Output (GroupMessage)", result.output.model_dump_json(indent=2))
@@ -420,14 +444,8 @@ async def run_round(
         _print_message(msg, turn_num, debug=debug)
 
         # Update canonical recipe card whenever Chef proposes or pivots
-        if msg.agent == "chef" and msg.message_type in ("proposal", "pivot") and msg.recipe_name:
-            context.current_recipe_card = RecipeCard(
-                recipe_name=msg.recipe_name,
-                proposed_ingredients=msg.proposed_ingredients or [],
-                estimated_time=msg.estimated_time,
-                cooking_summary=msg.cooking_summary,
-                full_instructions=msg.full_instructions,
-            )
+        if msg.agent == "chef" and msg.message_type in ("proposal", "pivot") and msg.recipe_card:
+            context.current_recipe_card = msg.recipe_card
 
         # Capture recipe_search query + results on Chef's first search this round
         if agent_name == "chef" and not context.search_results_this_round:

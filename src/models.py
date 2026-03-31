@@ -49,12 +49,8 @@ class GroupMessage(BaseModel):
     directed_at: Literal["chef", "lazy", "nutricia", "all"] = "all"
     message_type: MessageType
     text: str
-    # Only set on proposal/pivot turns:
-    recipe_name: str | None = None
-    proposed_ingredients: list[str] | None = None  # ingredients in the proposed recipe
-    estimated_time: str | None = None              # e.g. "35 minutes"
-    cooking_summary: str | None = None             # 2-4 sentence how-to summary
-    full_instructions: str | None = None           # complete step-by-step from recipe_get, for end-of-round display
+    # Only set on proposal/pivot turns by Chef:
+    recipe_card: RecipeCard | None = None
     # Only set on reaction/concession turns (chef never sets this):
     approval: bool | None = None
 

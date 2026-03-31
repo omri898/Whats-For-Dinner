@@ -8,7 +8,7 @@ from rich import print as rprint
 from rich.panel import Panel
 
 from src.agents import check_vllm, chef_agent, lazy_agent, nutricia_agent
-from src.models import GroupMessage, LazyGroupContext, Cuisine, LazyLevel
+from src.models import GroupMessage, LazyGroupContext, Cuisine, LazyLevel, RecipeCard
 
 
 AGENT_STYLES = {
@@ -22,7 +22,7 @@ def print_msg(msg: GroupMessage, turn: int) -> None:
     name, color = AGENT_STYLES.get(msg.agent, (msg.agent, "white"))
     subtitle = (
         f"[dim]Turn {turn} · {msg.message_type} · → {msg.directed_at}"
-        f"{' · ' + msg.recipe_name if msg.recipe_name else ''}[/dim]"
+        f"{' · ' + msg.recipe_card.recipe_name if msg.recipe_card else ''}[/dim]"
     )
     rprint(Panel(msg.text, title=f"[bold {color}]{name}[/bold {color}]",
                  subtitle=subtitle, border_style=color))
@@ -40,8 +40,10 @@ async def main() -> None:
         GroupMessage(
             agent="chef", message_type="proposal",
             text="Shakshuka! Eggs poached in spiced tomato — one pan, done in 20 minutes.",
-            recipe_name="Shakshuka",
-            proposed_ingredients=["eggs", "canned tomatoes", "garlic", "olive oil", "feta cheese"],
+            recipe_card=RecipeCard(
+                recipe_name="Shakshuka",
+                proposed_ingredients=["eggs", "canned tomatoes", "garlic", "olive oil", "feta cheese"],
+            ),
             directed_at="all",
         ),
     ]
