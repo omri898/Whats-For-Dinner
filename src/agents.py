@@ -202,7 +202,23 @@ class _StripReasoningTransport(httpx.AsyncBaseTransport):
             import sys
 
             print(f"[_StripReasoningTransport] JSON rewrite failed: {exc}", file=sys.stderr)
-        return await self._inner.handle_async_request(request)
+        response = await self._inner.handle_async_request(request)
+        # Dump the sanitised request body to a file when vLLM returns 400,
+        # so we can see exactly what it rejected.
+        if response.status_code == 400:
+            import datetime as _dt
+            from pathlib import Path as _Path
+            dump_dir = _Path("logs")
+            dump_dir.mkdir(exist_ok=True)
+            ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            dump_path = dump_dir / f"bad-request-{ts}.json"
+            dump_path.write_bytes(request.content)
+            print(
+                f"[_StripReasoningTransport] 400 from vLLM — request body dumped to {dump_path} "
+                f"({len(request.content)} bytes)",
+                file=sys.stderr,
+            )
+        return response
 
     async def aclose(self) -> None:
         await self._inner.aclose()

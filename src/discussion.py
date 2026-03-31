@@ -419,20 +419,23 @@ async def run_round(
             console.print("[dim]── Press Enter for next agent ──[/dim]", end=" ")
             input()
         else:
-            # Use iter() instead of run() so we can capture partial messages on crash
-            async with agent.iter("Your turn.", deps=context) as agent_run:
-                try:
+            # Use iter() instead of run() so we can capture partial messages on crash.
+            # Wrap the entire async-with: PydanticAI's graph can raise from __aexit__
+            # (exception-group unwrapping), which a try/except inside the block won't catch.
+            try:
+                async with agent.iter("Your turn.", deps=context) as agent_run:
                     with console.status(f"[dim]{display_name} is thinking...[/dim]"):
                         async for _node in agent_run:
                             pass
                         time.sleep(MESSAGE_PAUSE_SECONDS)
-                except Exception as exc:
-                    # Log everything the model produced before the crash
-                    _log("Agent crashed", f"{display_name} (turn {turn_num})\n{exc}")
+            except Exception as exc:
+                # Log everything the model produced before the crash
+                _log("Agent crashed", f"{display_name} (turn {turn_num})\n{exc}\n\n{traceback.format_exc()}")
+                if agent_run is not None:
                     for m in agent_run.all_messages():
                         _print_msg_parts(m, display_name, turn_num, log_only=True)
-                    _log("Context at crash", context.model_dump_json(indent=2))
-                    raise
+                _log("Context at crash", context.model_dump_json(indent=2))
+                raise
             result = agent_run.result
             # Log full turn details post-hoc (same content as debug path, no console output)
             for m in result.all_messages():
