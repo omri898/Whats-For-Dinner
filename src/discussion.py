@@ -219,15 +219,28 @@ def _round_agreement(
     history: list[GroupMessage], current_card: RecipeCard | None
 ) -> str | None:
     """Return the agreed recipe name (from current_card) if both Lazy and Nutricia
-    most recently approved, else None.
+    approved after the most recent chef proposal/pivot, else None.
 
     Uses current_card as the canonical name — no recipe_name matching required on
     Lazy/Nutricia messages, preventing hallucinated-name mismatches.
+    Only approvals that arrive after the last proposal/pivot are counted, so a
+    previous approval for an earlier recipe cannot carry over to a new proposal.
     """
     if current_card is None:
         return None
-    last_lazy = next((m for m in reversed(history) if m.agent == "lazy"), None)
-    last_nutricia = next((m for m in reversed(history) if m.agent == "nutricia"), None)
+
+    # Find the index of the most recent chef proposal or pivot.
+    last_proposal_idx = next(
+        (i for i in range(len(history) - 1, -1, -1)
+         if history[i].agent == "chef" and history[i].message_type in ("proposal", "pivot")),
+        None,
+    )
+    if last_proposal_idx is None:
+        return None
+
+    post_proposal = history[last_proposal_idx + 1:]
+    last_lazy = next((m for m in reversed(post_proposal) if m.agent == "lazy"), None)
+    last_nutricia = next((m for m in reversed(post_proposal) if m.agent == "nutricia"), None)
     if not last_lazy or not last_nutricia:
         return None
     if last_lazy.approval is True and last_nutricia.approval is True:
